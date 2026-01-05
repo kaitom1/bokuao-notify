@@ -1,0 +1,34 @@
+name: bokuao-news-notify
+
+on:
+  schedule:
+    - cron: "5 21 * * *"   # JST 06:05
+    - cron: "5 3 * * *"    # JST 12:05
+    - cron: "5 9 * * *"    # JST 18:05
+    - cron: "59 14 * * *"  # JST 23:59
+  workflow_dispatch:
+
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests beautifulsoup4
+
+      - uses: actions/cache@v4
+        with:
+          path: state_news.json
+          key: bokuao-news-state
+
+      - name: Run news notifier
+        env:
+          BOKUAO_NEWS: ${{ secrets.BOKUAO_NEWS }}
+        run: python notify_bokuao_news.py
+
+      - uses: actions/cache@v4
+        with:
+          path: state_news.json
+          key: bokuao-news-state
