@@ -10,7 +10,7 @@ from typing import List, Dict, Set, Tuple
 LIST_URL = "https://bokuao.com/blog/list/1/0/"
 STATE_FILE = "state.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/5.2)"
+UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/6.1)"
 
 # 1メッセージの添付は最大10枚が無難
 MAX_IMAGES_PER_POST = 10
@@ -21,17 +21,14 @@ MAX_IMAGE_BYTES = 7 * 1024 * 1024
 # 画像URLフィルタ（拡張子ベース）
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
-# Discordのcontentは2000文字上限（Embedなし版）
-DISCORD_CONTENT_LIMIT = 2000
+# Discord embed description は 4096 まで（安全側で4000）
+EMBED_DESC_LIMIT = 4000
 
 # 対象メンバー → Webhook URL（環境変数から取得）
-# Secrets / workflow env と一致させること
 WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
     "金澤亜美": os.environ["AMI_KANAZAWA"],
     "早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
     "安納蒼衣": os.environ["AOI_ANNO"],
-    # 追加するなら例：
-    # "安納蒼衣": os.environ["AOI_ANNO"],
 }
 
 
@@ -177,7 +174,7 @@ def parse_post(post_url: str) -> Dict:
     if footer_line not in body:
         body = body.rstrip() + "\n\n" + footer_line
 
-    # タイトルは必須ではないが保持
+    # タイトル（ページtitleは長くなりやすいが、とりあえず維持）
     title = "（タイトル不明）"
     if soup.title and soup.title.get_text(strip=True):
         title = soup.title.get_text(strip=True)
@@ -224,7 +221,10 @@ def webhook_post_json(webhook_url: str, payload: Dict) -> None:
 
 
 def webhook_post_with_files(webhook_url: str, payload: Dict, files: List[Tuple[str, bytes]]) -> None:
-    """Discord webhook に添付ファイル付きで送る（本文と画像を同一メッセージにできる）"""
+    """
+    Discord webhook に添付ファイル付きで送る。
+    payload は payload_json として渡す。
+    """
     multipart = {}
     for idx, (fname, data) in enumerate(files):
         multipart[f"files[{idx}]"] = (fname, data)
@@ -238,34 +238,53 @@ def webhook_post_with_files(webhook_url: str, payload: Dict, files: List[Tuple[s
     r.raise_for_status()
 
 
-def truncate_for_discord(s: str, limit: int) -> str:
-    """Discordのcontent上限に収める。超過時は末尾に…を付ける"""
-    if len(s) <= limit:
-        return s
-    return s[: max(0, limit - 1)] + "…"
+def post_to_discord_embed_then_images(webhook_url: str, post: Dict) -> None:
+    """
+    1通目：Embedで本文
+    2通目：画像だけを添付でまとめて送る（Embed外）
+    """
+    # --- 1通目：本文（Embed） ---
+    embed_title = post.get("title") or "（タイトル不明）"
+    if len(embed_title) > 256:
+        embed_title = embed_title[:253] + "…"
 
+    desc = (post.get("body") or "").strip()
+    if len(desc) > EMBED_DESC_LIMIT:
+        desc = desc[: EMBED_DESC_LIMIT - 1] + "…"
 
-def post_to_discord_plain(webhook_url: str, post: Dict) -> None:
-    url_text = f"<{post['url']}>"
+    embed = {
+        "title": embed_title,
+        "url": post["url"],
+        "description": desc,
+        "footer": {"text": f"{post.get('author','（不明）')} / {post.get('date','（不明）')}"},
+    }
 
-    title = (post.get("title") or "").strip()
-    header = f"【{title}】\n\n" if title and title != "（タイトル不明）" else ""
-
-    content = f"{header}{post['body'].strip()}\n\n{url_text}"
-    content = truncate_for_discord(content, DISCORD_CONTENT_LIMIT)
-
-    payload = {
-        "content": content,
+    payload1 = {
+        "content": f"<{post['url']}>",  # クリック可能に。プレビュー暴れ防止で <> に
+        "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
 
-    image_urls: List[str] = post.get("images", [])[:MAX_IMAGES_PER_POST]
-    files = download_images(image_urls) if image_urls else []
+    webhook_post_json(webhook_url, payload1)
 
-    if files:
-        webhook_post_with_files(webhook_url, payload, files)
-    else:
-        webhook_post_json(webhook_url, payload)
+    # レート制限回避
+    time.sleep(0.9)
+
+    # --- 2通目：画像（添付） ---
+    image_urls: List[str] = (post.get("images") or [])[:MAX_IMAGES_PER_POST]
+    if not image_urls:
+        return
+
+    files = download_images(image_urls)
+    if not files:
+        return
+
+    payload2 = {
+        "content": "",  # 画像だけ送る
+        "allowed_mentions": {"parse": []},
+    }
+
+    webhook_post_with_files(webhook_url, payload2, files)
 
 
 def main() -> None:
@@ -303,7 +322,7 @@ def main() -> None:
     for author_key, post in pending.items():
         webhook_url = targets_norm[author_key]
 
-        post_to_discord_plain(webhook_url, post)
+        post_to_discord_embed_then_images(webhook_url, post)
 
         notified_list = set(notified_by_author.get(author_key, []))
         notified_list.add(post["url"])
