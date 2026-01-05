@@ -144,7 +144,7 @@ def post_to_discord(post: Dict) -> None:
     embed = {
         "title": embed_title,
         "url": post["url"],
-        "description": post["excerpt"],
+        "description": post["body"][:4000],
         "footer": {"text": f"{post['author']} / {post['date']}"},
     }
 
