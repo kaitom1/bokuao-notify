@@ -169,6 +169,11 @@ def parse_post(post_url: str) -> Dict:
     # 本文終端でカット（「MEMBER CONTENTS」以降を除外）
     body = cut_at_first_marker(body, ["MEMBER CONTENTS"])
 
+    # 本文末尾にフッター
+    footer_line = f"{author} / {date}"
+    if footer_line not in body:
+        body = body.rstrip() + "\n\n" + footer_line
+
     # タイトル（ページtitleは長くなりやすいが、とりあえず維持）
     title = "（タイトル不明）"
     if soup.title and soup.title.get_text(strip=True):
@@ -251,7 +256,6 @@ def post_to_discord_embed_then_images(webhook_url: str, post: Dict) -> None:
         "title": embed_title,
         "url": post["url"],
         "description": desc,
-        "footer": {"text": f"{post.get('author','（不明）')} / {post.get('date','（不明）')}"},
     }
 
     payload1 = {
