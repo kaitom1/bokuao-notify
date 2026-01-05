@@ -10,10 +10,7 @@ from typing import List, Dict, Optional, Set, Tuple
 LIST_URL = "https://bokuao.com/blog/list/1/0/"
 STATE_FILE = "state.json"
 
-WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
-TARGET_AUTHOR = "金澤亜美"
-
-UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/3.0)"
+UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/4.0)"
 
 # Discordの添付は1メッセージ最大10ファイルが無難
 MAX_IMAGES_PER_POST = 10
@@ -24,6 +21,13 @@ MAX_IMAGE_BYTES = 7 * 1024 * 1024
 
 # 画像URLフィルタ（拡張子ベース。必要なら緩めてください）
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+# 対象メンバー → Webhook URL（環境変数から取得）
+# ※ ここでキー（表示名）は「空白なし」の表記で統一しておくのが安全
+WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
+    "金澤亜美": os.environ["AMI_KANAZAWA"],
+    "早崎すずき": os.environ["SUZUKI_HAYASAKI"],
+}
 
 
 def norm(s: str) -> str:
@@ -173,10 +177,7 @@ def parse_post(post_url: str) -> Dict:
 
 
 def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
-    """
-    画像URLをダウンロードして (filename, bytes) の配列を返す。
-    サイズが大きすぎるものはスキップ。
-    """
+    """画像URLをダウンロードして (filename, bytes) の配列を返す（大きすぎるものはスキップ）"""
     out: List[Tuple[str, bytes]] = []
 
     for i, u in enumerate(urls, start=1):
@@ -186,10 +187,8 @@ def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
 
             data = r.content
             if len(data) > MAX_IMAGE_BYTES:
-                # サイズが大きすぎるのでスキップ
                 continue
 
-            # 拡張子からファイル名を作る
             path = urlparse(u).path
             ext = os.path.splitext(path)[1].lower() or ".jpg"
             if ext not in ALLOWED_EXT:
@@ -203,22 +202,19 @@ def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
     return out
 
 
-def webhook_post_json(payload: Dict) -> None:
-    r = requests.post(WEBHOOK_URL, json=payload, timeout=30)
+def webhook_post_json(webhook_url: str, payload: Dict) -> None:
+    r = requests.post(webhook_url, json=payload, timeout=30)
     r.raise_for_status()
 
 
-def webhook_post_with_files(payload: Dict, files: List[Tuple[str, bytes]]) -> None:
-    """
-    Discord webhook に添付ファイル付きで送る。
-    payload は payload_json として渡す。
-    """
+def webhook_post_with_files(webhook_url: str, payload: Dict, files: List[Tuple[str, bytes]]) -> None:
+    """Discord webhook に添付ファイル付きで送る（Embed外で画像が確実に表示される）"""
     multipart = {}
     for idx, (fname, data) in enumerate(files):
         multipart[f"files[{idx}]"] = (fname, data)
 
     r = requests.post(
-        WEBHOOK_URL,
+        webhook_url,
         data={"payload_json": json.dumps(payload, ensure_ascii=False)},
         files=multipart,
         timeout=60,
@@ -226,12 +222,11 @@ def webhook_post_with_files(payload: Dict, files: List[Tuple[str, bytes]]) -> No
     r.raise_for_status()
 
 
-def post_to_discord(post: Dict) -> None:
+def post_to_discord(webhook_url: str, post: Dict) -> None:
     """
     1通目：本文（Embed）
     2通目：画像だけ（Embed外）を添付でまとめて送る
     """
-    # 1通目：本文はEmbedで読みやすく
     embed_title = post["title"]
     if len(embed_title) > 120:
         embed_title = embed_title[:117] + "…"
@@ -247,17 +242,15 @@ def post_to_discord(post: Dict) -> None:
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
-    webhook_post_json(payload1)
+    webhook_post_json(webhook_url, payload1)
 
-    # 少し待つ（レート制限回避）
     time.sleep(0.8)
 
-    # 2通目：画像をEmbed外に「添付」でまとめて表示
+    # 2通目：画像（添付）
     image_urls: List[str] = post.get("images", [])
     if not image_urls:
         return
 
-    # 1メッセージ最大10画像に制限（Discord制約）
     image_urls = image_urls[:MAX_IMAGES_PER_POST]
 
     files = download_images(image_urls)
@@ -265,32 +258,44 @@ def post_to_discord(post: Dict) -> None:
         return
 
     payload2 = {
-        "content": "",  # 画像だけにしたいので空。必要なら "images" 等を入れる
+        "content": "",  # 画像だけ表示したいので空
         "allowed_mentions": {"parse": []},
     }
-    webhook_post_with_files(payload2, files)
+    webhook_post_with_files(webhook_url, payload2, files)
 
 
 def main() -> None:
+    # stateは「作者ごと」に通知済みURLを保持（運用で分かりやすい）
     state = load_state()
-    notified: Set[str] = set(state.get("notified_urls", []))
+    notified_by_author: Dict[str, List[str]] = state.get("notified_by_author", {})
+
+    # 比較用に正規化した author->webhook を作る
+    targets_norm = {norm(k): v for k, v in WEBHOOKS_BY_AUTHOR.items()}
 
     for url in list_detail_urls():
-        if url in notified:
-            continue
-
         post = parse_post(url)
 
-        if norm(post["author"]) != norm(TARGET_AUTHOR):
+        author_key = norm(post["author"])
+        if author_key not in targets_norm:
             continue
 
-        post_to_discord(post)
+        webhook_url = targets_norm[author_key]
 
-        notified.add(url)
-        state["notified_urls"] = sorted(notified)
+        # 作者ごとの通知済みを確認
+        notified_list = set(notified_by_author.get(author_key, []))
+        if url in notified_list:
+            continue
+
+        # 送信
+        post_to_discord(webhook_url, post)
+
+        # 保存
+        notified_list.add(url)
+        notified_by_author[author_key] = sorted(notified_list)
+        state["notified_by_author"] = notified_by_author
         save_state(state)
 
-        print("Posted:", url)
+        print(f"Posted: {url} -> {post['author']}")
         return
 
     print("No new target-author posts.")
