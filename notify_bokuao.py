@@ -7,7 +7,10 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from typing import List, Dict, Set, Tuple
 
-LIST_URL = "https://bokuao.com/blog/list/1/0/"
+LIST_URLS = [
+    "https://bokuao.com/blog/list/1/0/?writer=0&page=1",
+    "https://bokuao.com/blog/list/1/0/?writer=0&page=2",
+]
 STATE_FILE = "state.json"
 
 UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/6.1)"
