@@ -35,6 +35,22 @@ WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
     "早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
     "安納蒼衣": os.environ["AOI_ANNO"],
     "塩釜菜那": os.environ["NANA_SHIOGAMA"],
+    "萩原心花": os.environ["KOKOKA_HAGIWARA"],
+    #"早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
+    #"安納蒼衣": os.environ["AOI_ANNO"],
+    #"塩釜菜那": os.environ["NANA_SHIOGAMA"],
+    #"金澤亜美": os.environ["AMI_KANAZAWA"],
+    #"早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
+    #"安納蒼衣": os.environ["AOI_ANNO"],
+    #"塩釜菜那": os.environ["NANA_SHIOGAMA"],
+    #"金澤亜美": os.environ["AMI_KANAZAWA"],
+    #"早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
+    #"安納蒼衣": os.environ["AOI_ANNO"],
+    #"塩釜菜那": os.environ["NANA_SHIOGAMA"],
+    #"金澤亜美": os.environ["AMI_KANAZAWA"],
+    #"早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
+    #"安納蒼衣": os.environ["AOI_ANNO"],
+    #"塩釜菜那": os.environ["NANA_SHIOGAMA"],
 }
 
 
