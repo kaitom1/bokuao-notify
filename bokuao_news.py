@@ -232,13 +232,11 @@ def post_news_item(item: Dict) -> None:
 
     title = item.get("title") or "（タイトル不明）"
 
-    # 太字＋【】＋本文と1行空ける
-    header = f"**【{title}】**\n\n"
-
-    url_text = f"<{item['url']}>"
+    # タイトルを太字＋【】＋URL埋め込み
+    header = f"**【[{title}]({item['url']})】**\n\n"
 
     body = (detail.get("body") or "").strip()
-    content = header + body + "\n\n" + url_text
+    content = header + body
     content = truncate_for_discord(content, DISCORD_CONTENT_LIMIT)
 
     payload = {
