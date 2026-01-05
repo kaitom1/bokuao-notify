@@ -10,7 +10,7 @@ from typing import List, Dict, Set, Tuple
 LIST_URL = "https://bokuao.com/blog/list/1/0/"
 STATE_FILE = "state.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/5.0)"
+UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/5.1)"
 
 # 1メッセージの添付は最大10枚が無難
 MAX_IMAGES_PER_POST = 10
@@ -21,12 +21,13 @@ MAX_IMAGE_BYTES = 7 * 1024 * 1024
 # 画像URLフィルタ（拡張子ベース）
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
+# Discordのcontentは2000文字上限（超えるとエラーになる）
+DISCORD_CONTENT_LIMIT = 2000
+
 # 対象メンバー → Webhook URL（環境変数から取得）
-# Secrets / workflow env と一致させること
 WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
     "金澤亜美": os.environ["AMI_KANAZAWA"],
     "早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
-    # 追加するなら例：
     # "安納蒼衣": os.environ["AOI_ANNO"],
 }
 
@@ -146,7 +147,7 @@ def parse_post(post_url: str) -> Dict:
     if m:
         date = m.group(0)
 
-    # タイトル
+    # タイトル（使わないが保持しておく）
     title = "（タイトル不明）"
     if soup.title and soup.title.get_text(strip=True):
         title = soup.title.get_text(strip=True)
@@ -163,7 +164,7 @@ def parse_post(post_url: str) -> Dict:
     # 本文終端でカット（「MEMBER CONTENTS」以降を除外）
     body = cut_at_first_marker(body, ["MEMBER CONTENTS"])
 
-    # 本文末尾にフッター
+    # 本文末尾にフッター（希望の表記を維持）
     footer_line = f"{author} / {date}"
     if footer_line not in body:
         body = body.rstrip() + "\n\n" + footer_line
@@ -224,24 +225,29 @@ def webhook_post_with_files(webhook_url: str, payload: Dict, files: List[Tuple[s
     r.raise_for_status()
 
 
-def post_to_discord_A(webhook_url: str, post: Dict) -> None:
-    """
-    A: 1通で本文(Embed) + 画像(添付)を送る
-    → スマホの「本文と画像の間の空白」を最小化
-    """
-    embed_title = post["title"]
-    if len(embed_title) > 120:
-        embed_title = embed_title[:117] + "…"
+def truncate_for_discord(s: str, limit: int) -> str:
+    """Discordのcontent上限に収める。超過時は末尾に…を付ける"""
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 1)] + "…"
 
-    embed = {
-        "title": embed_title,
-        "url": post["url"],
-        "description": post["body"][:4000],
-    }
+
+def post_to_discord_plain(webhook_url: str, post: Dict) -> None:
+    """
+    Embedなし：contentに本文を入れ、同じメッセージに画像を添付する
+    - contentは2000文字上限があるので切る
+    - URLはプレビューを出したくなければ <> で囲む
+    """
+    # URLプレビューが邪魔なら <...> にする（プレビュー抑止になりやすい）
+    url_text = f"<{post['url']}>"
+
+    content = post["body"].strip()
+    # 本文 + URL（必要なら順番は逆でもOK）
+    content = f"{content}\n\n{url_text}"
+    content = truncate_for_discord(content, DISCORD_CONTENT_LIMIT)
 
     payload = {
-        "content": "",
-        "embeds": [embed],
+        "content": content,
         "allowed_mentions": {"parse": []},
     }
 
@@ -261,7 +267,7 @@ def main() -> None:
     # 対象作者（正規化） -> webhook_url
     targets_norm: Dict[str, str] = {norm(k): v for k, v in WEBHOOKS_BY_AUTHOR.items()}
 
-    # このrunで「作者ごとに1件だけ」送るためのバッファ
+    # このrunで「作者ごとに1件だけ」送る
     pending: Dict[str, Dict] = {}
 
     for url in list_detail_urls():
@@ -279,7 +285,6 @@ def main() -> None:
 
         pending[author_key] = post
 
-        # 全員分揃ったら打ち切り
         if len(pending) == len(targets_norm):
             break
 
@@ -287,11 +292,10 @@ def main() -> None:
         print("No new target-author posts.")
         return
 
-    # 作者ごとに送信＆state更新
     for author_key, post in pending.items():
         webhook_url = targets_norm[author_key]
 
-        post_to_discord_A(webhook_url, post)
+        post_to_discord_plain(webhook_url, post)
 
         notified_list = set(notified_by_author.get(author_key, []))
         notified_list.add(post["url"])
