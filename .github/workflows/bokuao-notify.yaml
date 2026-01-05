@@ -34,7 +34,7 @@ jobs:
           AOI_ANNO: ${{ secrets.AOI_ANNO }}
           NANA_SHIOGAMA: ${{ secrets.NANA_SHIOGAMA }}
           KOKOKA_HAGIWARA: ${{ secrets.KOKOKA_HAGIWARA }}
-          #SUZUKI_HAYASAKI: ${{ secrets.SUZUKI_HAYASAKI }}
+          YUA_KUDO: ${{ secrets.YUA_KUDO }}
           #AOI_ANNO: ${{ secrets.AOI_ANNO }}
           #NANA_SHIOGAMA: ${{ secrets.NANA_SHIOGAMA }}
           #AMI_KANAZAWA: ${{ secrets.AMI_KANAZAWA }}
