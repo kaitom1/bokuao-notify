@@ -231,10 +231,10 @@ def post_news_item(item: Dict) -> None:
     detail = parse_news_detail(item["url"])
 
     title = item.get("title") or "（タイトル不明）"
-    category = item.get("category") or "（不明）"
-    date = item.get("date") or detail.get("date") or "（不明）"
 
-    header = f"\n\n\n"
+    # 太字＋【】＋本文と1行空ける
+    header = f"**【{title}】**\n\n"
+
     url_text = f"<{item['url']}>"
 
     body = (detail.get("body") or "").strip()
