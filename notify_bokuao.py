@@ -29,6 +29,7 @@ DISCORD_CONTENT_LIMIT = 2000
 WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
     "金澤亜美": os.environ["AMI_KANAZAWA"],
     "早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
+    "安納蒼衣": os.environ["AOI_ANNO"],
     # 追加するなら例：
     # "安納蒼衣": os.environ["AOI_ANNO"],
 }
