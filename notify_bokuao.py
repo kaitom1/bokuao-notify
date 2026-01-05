@@ -147,9 +147,6 @@ def parse_post(post_url: str) -> Dict:
     for img in container.find_all("img"):
         src = (
             img.get("src")
-            or img.get("data-src")
-            or img.get("data-original")
-            or img.get("data-lazy")
         )
         if not src:
             continue
