@@ -12,11 +12,11 @@ STATE_FILE = "state.json"
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 TARGET_AUTHOR = "金澤亜美"
 
-UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/1.1)"
+UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/2.0)"
 
 
 def norm(s: str) -> str:
-    """空白（半角/全角）を除去して比較できるように正規化"""
+    """空白（半角/全角）を除去して比較用に正規化"""
     return re.sub(r"[ \u3000]+", "", (s or "").strip())
 
 
@@ -39,7 +39,7 @@ def save_state(state: Dict) -> None:
 
 
 def list_detail_urls() -> List[str]:
-    """一覧ページから detail URL を収集（重複除去、出現順を維持）"""
+    """一覧ページから detail URL を取得（重複除去・順序維持）"""
     html = fetch(LIST_URL)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -60,6 +60,7 @@ def list_detail_urls() -> List[str]:
 
 
 def cut_at_first_marker(text: str, markers: List[str]) -> str:
+    """最初に出現した marker 以降を削除"""
     idxs = [text.find(m) for m in markers if text.find(m) != -1]
     if not idxs:
         return text.rstrip()
@@ -67,11 +68,6 @@ def cut_at_first_marker(text: str, markers: List[str]) -> str:
 
 
 def parse_post(post_url: str) -> Dict:
-    """
-    記事ページから情報を抽出:
-    - author / date / title / body / image
-    ノイズ（noscript等）を消して抽出。
-    """
     html = fetch(post_url)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -81,40 +77,43 @@ def parse_post(post_url: str) -> Dict:
     for tag in soup.find_all(["header", "footer", "nav"]):
         tag.decompose()
 
-    # なるべく本文に近い領域
     container = soup.find("main") or soup.find("article") or soup.body
     if container is None:
         container = soup
 
-    # 画像：本文領域から最初の1枚を拾う
+    # 画像（最初の1枚 / lazy-load対応）
     img_url: Optional[str] = None
     for img in container.find_all("img"):
-        src = img.get("src")
+        src = (
+            img.get("src")
+            or img.get("data-src")
+            or img.get("data-original")
+            or img.get("data-lazy")
+        )
         if not src:
             continue
-        abs_src = urljoin(post_url, src)
 
-        # サイト内画像のみ（外部CDN等ならこの条件を緩めてください）
-        if "bokuao.com" in abs_src:
+        abs_src = urljoin(post_url, src)
+        if abs_src.startswith("http://") or abs_src.startswith("https://"):
             img_url = abs_src
             break
 
-    # テキスト
+    # テキスト抽出
     text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln]
 
-    # 日付（例: 2026.01.05）
+    # 日付
     date = None
     m = re.search(r"\b20\d{2}\.\d{2}\.\d{2}\b", text)
     if m:
         date = m.group(0)
 
-    # タイトル（titleタグ優先）
+    # タイトル
     title = None
     if soup.title and soup.title.get_text(strip=True):
         title = soup.title.get_text(strip=True)
 
-    # 筆者推定
+    # 筆者名
     author = None
     for ln in lines[:120]:
         if 2 <= len(ln) <= 20 and (" " in ln or "　" in ln) and "BLOG" not in ln:
@@ -123,10 +122,10 @@ def parse_post(post_url: str) -> Dict:
 
     body = "\n".join(lines)
 
-    # 本文終端：共通UIの開始でカット
+    # 本文終端でカット
     body = cut_at_first_marker(body, ["MEMBER CONTENTS"])
 
-    # 本文末尾にフッター（希望：B）
+    # 本文末尾にフッター（B方式）
     footer_line = f"{author or '（不明）'} / {date or '（不明）'}"
     if footer_line not in body:
         body = body.rstrip() + "\n\n" + footer_line
@@ -137,23 +136,21 @@ def parse_post(post_url: str) -> Dict:
         "date": date or "（不明）",
         "title": title or "（タイトル不明）",
         "body": body,
-        "image": img_url,  # ← これをDiscord Embedのimageに設定する
+        "image": img_url,
     }
 
 
 def post_to_discord(post: Dict) -> None:
-    """Discord Webhook へ送信（Embed使用 + 画像表示）"""
     embed_title = post["title"]
     if len(embed_title) > 120:
         embed_title = embed_title[:117] + "…"
 
-    embed: Dict = {
+    embed = {
         "title": embed_title,
         "url": post["url"],
-        "description": post["body"][:4000],  # description上限(4096)対策
+        "description": post["body"][:4000],  # Embed上限対策
     }
 
-    # 画像をEmbedに貼り付け（Discordで確実に表示されやすい）
     if post.get("image"):
         embed["image"] = {"url": post["image"]}
 
@@ -171,9 +168,7 @@ def main() -> None:
     state = load_state()
     notified: Set[str] = set(state.get("notified_urls", []))
 
-    candidates = list_detail_urls()
-
-    for url in candidates:
+    for url in list_detail_urls():
         if url in notified:
             continue
 
