@@ -10,6 +10,7 @@ from typing import List, Dict, Set, Tuple
 LIST_URLS = [
     "https://bokuao.com/blog/list/1/0/?writer=0&page=1",
     "https://bokuao.com/blog/list/1/0/?writer=0&page=2",
+    "https://bokuao.com/blog/list/1/0/?writer=0&page=3",
 ]
 STATE_FILE = "state.json"
 
