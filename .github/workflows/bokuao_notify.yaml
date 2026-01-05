@@ -29,6 +29,7 @@ jobs:
         env:
           AMI_KANAZAWA: ${{ secrets.AMI_KANAZAWA }}
           SUZUKI_HAYASAKI: ${{ secrets.SUZUKI_HAYASAKI }}
+          AOI_ANNO: ${{ secrets.AOI_ANNO }}
         run: python notify_bokuao.py
 
       - name: Save state
