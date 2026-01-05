@@ -2,7 +2,10 @@ name: bokuao-blog-notify
 
 on:
   schedule:
-    - cron: "30 15 * * *"
+    - cron: "00 09 * * *"
+    - cron: "00 12 * * *"
+    - cron: "00 14 * * *"
+    - cron: "30 14 * * *"
   workflow_dispatch:
 
 jobs:
