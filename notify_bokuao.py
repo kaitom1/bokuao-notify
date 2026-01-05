@@ -120,14 +120,13 @@ def parse_post(post_url: str) -> Dict:
 
     # 抜粋（最大400文字）
     body = "\n".join(lines)
-    excerpt = body[:400] + ("…" if len(body) > 400 else "")
 
     return {
         "url": post_url,
         "author": author or "（不明）",
         "date": date or "（不明）",
         "title": title or "（タイトル不明）",
-        "excerpt": excerpt,
+        "body": body,
         "image": img_url,
     }
 
