@@ -129,16 +129,18 @@ def parse_post(post_url: str) -> Dict:
     "body": body,
     "image": img_url,
 }
+
 　　 # 本文の終了（共通UI）でカットする：本文は「またね」までにしたい
-     END_MARKERS = ["MEMBER CONTENTS"]
+END_MARKERS = ["MEMBER CONTENTS"]
 
-     def cut_at_first_marker(text: str, markers):
-         idxs = [text.find(m) for m in markers if text.find(m) != -1]
-         if not idxs:
-             return text
-        return text[:min(idxs)].rstrip()
+def cut_at_first_marker(text: str, markers):
+    idxs = [text.find(m) for m in markers if text.find(m) != -1]
+    if not idxs:
+        return text
+    return text[:min(idxs)].rstrip()
 
-     body = cut_at_first_marker(body, END_MARKERS)
+body = cut_at_first_marker(body, END_MARKERS)
+
 
 def post_to_discord(post: Dict) -> None:
     """
@@ -151,11 +153,11 @@ def post_to_discord(post: Dict) -> None:
         embed_title = embed_title[:117] + "…"
 
     embed = {
-        "title": embed_title,
-        "url": post["url"],
-        "description": post["body"][:4000],
-        "footer": {"text": f"{post['author']} / {post['date']}"},
-    }
+    "title": embed_title,
+    "url": post["url"],
+    "description": post["body"][:4000],  # 本文をembedに入れる場合（長いなら分割送信方式推奨）
+    "footer": {"text": f"{post['author']} / {post['date']}"},
+}
 
     if post.get("image"):
         embed["image"] = {"url": post["image"]}
