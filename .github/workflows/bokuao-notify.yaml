@@ -2,8 +2,7 @@ name: bokuao-blog-notify
 
 on:
   schedule:
-    # JST 09:05 = UTC 00:05
-    - cron: "58 14 * * *"
+    - cron: "30 15 * * *"
   workflow_dispatch:
 
 jobs:
