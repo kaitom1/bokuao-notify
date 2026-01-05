@@ -27,7 +27,7 @@ jobs:
 
       - name: Run notifier
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          AMI_KANAZAWA: ${{ secrets.AMI_KANAZAWA }}
         run: python notify_bokuao.py
 
       - name: Save state
