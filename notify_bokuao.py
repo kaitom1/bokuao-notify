@@ -26,7 +26,7 @@ ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 # ※ ここでキー（表示名）は「空白なし」の表記で統一しておくのが安全
 WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
     "金澤亜美": os.environ["AMI_KANAZAWA"],
-    "早崎すずき": os.environ["SUZUKI_HAYASAKI"],
+    "早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
 }
 
 
