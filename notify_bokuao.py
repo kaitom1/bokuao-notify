@@ -40,9 +40,23 @@ def parse_post(post_url):
     html = fetch(post_url)
     soup = BeautifulSoup(html, "html.parser")
 
-    # 画像（1枚だけ）
+    # 1) ノイズを先に除去（重要：noscript が「JavaScript無効」文言の正体）
+    for tag in soup.find_all(["script", "style", "noscript"]):
+        tag.decompose()
+
+    # ヘッダー/フッター/ナビなどが拾われるのも防ぐ（あれば消す）
+    for tag in soup.find_all(["header", "footer", "nav"]):
+        tag.decompose()
+
+    # 2) 「本文らしい領域」を優先して選ぶ（サイト構造が変わっても壊れにくい）
+    #    main > article > body の順でフォールバック
+    container = soup.find("main") or soup.find("article") or soup.body
+    if container is None:
+        container = soup  # 最後の保険
+
+    # 3) 画像：本文領域から最初の1枚を拾う（過度な転載にならないよう1枚まで）
     img_url = None
-    for img in soup.find_all("img"):
+    for img in container.find_all("img"):
         src = img.get("src")
         if not src:
             continue
@@ -51,24 +65,24 @@ def parse_post(post_url):
             img_url = abs_src
             break
 
-    # テキスト抽出（抜粋用）
-    text = soup.get_text("\n", strip=True)
+    # 4) テキスト抽出（本文領域のみ）
+    text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln]
 
-    # 日付っぽい表記（例: 2026.01.04）
+    # 5) 日付っぽい表記（例: 2026.01.05）
     date = None
     m = re.search(r"\b20\d{2}\.\d{2}\.\d{2}\b", text)
     if m:
         date = m.group(0)
 
-    # 筆者名の簡易推定（過検出しうるので、必要なら後で精密化）
+    # 6) 筆者名の簡易推定（上部の短い行から拾う）
     author = None
     for ln in lines[:80]:
         if 2 <= len(ln) <= 20 and (" " in ln or "　" in ln) and "BLOG" not in ln:
             author = ln
             break
 
-    # 抜粋（最大400文字）
+    # 7) 抜粋（最大400文字）
     body = "\n".join(lines)
     excerpt = body[:400] + ("…" if len(body) > 400 else "")
 
