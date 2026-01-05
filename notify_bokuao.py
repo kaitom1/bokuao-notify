@@ -143,33 +143,33 @@ def parse_post(post_url: str) -> Dict:
         container = soup
 
     # 画像：本文領域の全imgを収集（lazy-load対応、プレースホルダー回避）
-　　image_urls: List[str] = []
-　　for img in container.find_all("img"):
-    　　src = (
-      　　  img.get("data-src")
-       　　 or img.get("data-original")
-       　　 or img.get("data-lazy")
-       　　 or img.get("src")  # ← 最後に回す
-    　　)
-    　　if not src:
-      　　  continue
+    image_urls: List[str] = []
+    for img in container.find_all("img"):
+        src = (
+            img.get("data-src")
+            or img.get("data-original")
+            or img.get("data-lazy")
+            or img.get("src")  # ← 最後に回す
+        )
+        if not src:
+            continue
 
-    　　abs_src = urljoin(post_url, src)
-    　　if not abs_src.startswith(("http://", "https://")):
-        continue
+        abs_src = urljoin(post_url, src)
+        if not abs_src.startswith(("http://", "https://")):
+            continue
 
-   　　 # 透明プレースホルダー等をざっくり除外
-   　　 low = abs_src.lower()
-   　　 if low.startswith("data:image/"):
-   　　     continue
-   　　 if any(x in low for x in ("transparent", "spacer", "blank", "pixel", "placeholder")):
-   　　     continue
-　　
-  　　  if is_image_url(abs_src):
-   　　     image_urls.append(abs_src)
+        # 透明プレースホルダー等をざっくり除外
+        low = abs_src.lower()
+        if low.startswith("data:image/"):
+            continue
+        if any(x in low for x in ("transparent", "spacer", "blank", "pixel", "placeholder")):
+            continue
 
-　　image_urls = uniq_keep_order(image_urls)
+        if is_image_url(abs_src):
+            image_urls.append(abs_src)
 
+    image_urls = uniq_keep_order(image_urls)
+    
     # テキスト抽出
     text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln]
