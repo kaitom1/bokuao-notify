@@ -240,7 +240,7 @@ def post_to_discord_A(webhook_url: str, post: Dict) -> None:
     }
 
     payload = {
-        "content": post["url"],
+        "content": "",
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
