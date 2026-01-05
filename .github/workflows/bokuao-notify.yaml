@@ -2,9 +2,13 @@ name: bokuao-blog-notify
 
 on:
   schedule:
-    # JST 09:05 = UTC 00:05
+    # UTC 14:59 = JST 23:59
     - cron: "59 14 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
 
 jobs:
   run:
@@ -20,7 +24,7 @@ jobs:
         run: pip install requests beautifulsoup4
 
       - name: Restore state
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: state.json
           key: bokuao-state
@@ -33,13 +37,7 @@ jobs:
         run: python notify_bokuao.py
 
       - name: Save state
-        uses: actions/cache@v4
-        with:
-          path: state.json
-          key: bokuao-state
-
-      - name: Save state (cache)
-        uses: actions/cache@v4
+        uses: actions/cache/save@v4
         with:
           path: state.json
           key: bokuao-state
