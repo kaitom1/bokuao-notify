@@ -63,22 +63,28 @@ def save_state(state: Dict) -> None:
 
 
 def list_detail_urls() -> List[str]:
-    """一覧ページから detail URL を取得（重複除去・順序維持）"""
-    html = fetch(LIST_URL)
-    soup = BeautifulSoup(html, "html.parser")
-
+    """
+    複数の一覧ページから detail URL を取得
+    （重複除去・新しい順を維持）
+    """
     urls: List[str] = []
     seen: Set[str] = set()
 
-    for a in soup.select('a[href^="/blog/detail/"], a[href*="/blog/detail/"]'):
-        href = a.get("href")
-        if not href:
-            continue
-        abs_url = urljoin(LIST_URL, href)
-        if abs_url in seen:
-            continue
-        seen.add(abs_url)
-        urls.append(abs_url)
+    for list_url in LIST_URLS:
+        html = fetch(list_url)
+        soup = BeautifulSoup(html, "html.parser")
+
+        for a in soup.select('a[href^="/blog/detail/"], a[href*="/blog/detail/"]'):
+            href = a.get("href")
+            if not href:
+                continue
+
+            abs_url = urljoin(list_url, href)
+            if abs_url in seen:
+                continue
+
+            seen.add(abs_url)
+            urls.append(abs_url)
 
     return urls
 
