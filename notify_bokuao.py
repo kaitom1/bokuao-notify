@@ -10,24 +10,32 @@ from typing import List, Dict, Set, Tuple
 LIST_URL = "https://bokuao.com/blog/list/1/0/"
 STATE_FILE = "state.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/4.1)"
+UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/5.0)"
 
+# 1メッセージの添付は最大10枚が無難
 MAX_IMAGES_PER_POST = 10
+
+# 画像のサイズ上限（バイト）
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
+
+# 画像URLフィルタ（拡張子ベース）
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
 # 対象メンバー → Webhook URL（環境変数から取得）
+# Secrets / workflow env と一致させること
 WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
     "金澤亜美": os.environ["AMI_KANAZAWA"],
     "早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
+    # 追加するなら例：
+    # "安納蒼衣": os.environ["AOI_ANNO"],
 }
 
 
 def norm(s: str) -> str:
-    """空白除去 + 異体字ゆれ（﨑→崎）を正規化"""
+    """空白除去 + 代表的な異体字ゆれ（﨑→崎）を正規化"""
     s = (s or "").strip()
     s = re.sub(r"[ \u3000]+", "", s)
-    s = s.replace("﨑", "崎")  # 念のため（サイト表記が崎に揺れても一致させる）
+    s = s.replace("﨑", "崎")
     return s
 
 
@@ -50,6 +58,7 @@ def save_state(state: Dict) -> None:
 
 
 def list_detail_urls() -> List[str]:
+    """一覧ページから detail URL を取得（重複除去・順序維持）"""
     html = fetch(LIST_URL)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -70,6 +79,7 @@ def list_detail_urls() -> List[str]:
 
 
 def cut_at_first_marker(text: str, markers: List[str]) -> str:
+    """最初に出現した marker 以降を削除"""
     idxs = [text.find(m) for m in markers if text.find(m) != -1]
     if not idxs:
         return text.rstrip()
@@ -97,6 +107,7 @@ def parse_post(post_url: str) -> Dict:
     html = fetch(post_url)
     soup = BeautifulSoup(html, "html.parser")
 
+    # ノイズ除去
     for tag in soup.find_all(["script", "style", "noscript"]):
         tag.decompose()
     for tag in soup.find_all(["header", "footer", "nav"]):
@@ -106,6 +117,7 @@ def parse_post(post_url: str) -> Dict:
     if container is None:
         container = soup
 
+    # 画像：本文領域の全imgを収集（lazy-load対応）
     image_urls: List[str] = []
     for img in container.find_all("img"):
         src = (
@@ -121,20 +133,25 @@ def parse_post(post_url: str) -> Dict:
             continue
         if is_image_url(abs_src):
             image_urls.append(abs_src)
+
     image_urls = uniq_keep_order(image_urls)
 
+    # テキスト抽出
     text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln]
 
+    # 日付
     date = "（不明）"
     m = re.search(r"\b20\d{2}\.\d{2}\.\d{2}\b", text)
     if m:
         date = m.group(0)
 
+    # タイトル
     title = "（タイトル不明）"
     if soup.title and soup.title.get_text(strip=True):
         title = soup.title.get_text(strip=True)
 
+    # 筆者名（推定）
     author = "（不明）"
     for ln in lines[:120]:
         if 2 <= len(ln) <= 20 and (" " in ln or "　" in ln) and "BLOG" not in ln:
@@ -142,8 +159,11 @@ def parse_post(post_url: str) -> Dict:
             break
 
     body = "\n".join(lines)
+
+    # 本文終端でカット（「MEMBER CONTENTS」以降を除外）
     body = cut_at_first_marker(body, ["MEMBER CONTENTS"])
 
+    # 本文末尾にフッター
     footer_line = f"{author} / {date}"
     if footer_line not in body:
         body = body.rstrip() + "\n\n" + footer_line
@@ -159,21 +179,28 @@ def parse_post(post_url: str) -> Dict:
 
 
 def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
+    """画像URLをダウンロードして (filename, bytes) の配列を返す（大きすぎるものはスキップ）"""
     out: List[Tuple[str, bytes]] = []
+
     for i, u in enumerate(urls, start=1):
         try:
             r = requests.get(u, headers={"User-Agent": UA}, timeout=30)
             r.raise_for_status()
+
             data = r.content
             if len(data) > MAX_IMAGE_BYTES:
                 continue
+
             path = urlparse(u).path
             ext = os.path.splitext(path)[1].lower() or ".jpg"
             if ext not in ALLOWED_EXT:
                 ext = ".jpg"
-            out.append((f"image_{i:02d}{ext}", data))
+
+            filename = f"image_{i:02d}{ext}"
+            out.append((filename, data))
         except Exception:
             continue
+
     return out
 
 
@@ -183,6 +210,7 @@ def webhook_post_json(webhook_url: str, payload: Dict) -> None:
 
 
 def webhook_post_with_files(webhook_url: str, payload: Dict, files: List[Tuple[str, bytes]]) -> None:
+    """Discord webhook に添付ファイル付きで送る（本文と画像を同一メッセージにできる）"""
     multipart = {}
     for idx, (fname, data) in enumerate(files):
         multipart[f"files[{idx}]"] = (fname, data)
@@ -196,38 +224,44 @@ def webhook_post_with_files(webhook_url: str, payload: Dict, files: List[Tuple[s
     r.raise_for_status()
 
 
-def post_to_discord(webhook_url: str, post: Dict) -> None:
-    # 1通目：本文（Embed）
+def post_to_discord_A(webhook_url: str, post: Dict) -> None:
+    """
+    A: 1通で本文(Embed) + 画像(添付)を送る
+    → スマホの「本文と画像の間の空白」を最小化
+    """
     embed_title = post["title"]
     if len(embed_title) > 120:
         embed_title = embed_title[:117] + "…"
 
-    embed = {"title": embed_title, "url": post["url"], "description": post["body"][:4000]}
-    payload1 = {"content": post["url"], "embeds": [embed], "allowed_mentions": {"parse": []}}
-    webhook_post_json(webhook_url, payload1)
+    embed = {
+        "title": embed_title,
+        "url": post["url"],
+        "description": post["body"][:4000],
+    }
 
-    time.sleep(0.8)
+    payload = {
+        "content": post["url"],
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+    }
 
-    # 2通目：画像（添付）
     image_urls: List[str] = post.get("images", [])[:MAX_IMAGES_PER_POST]
-    if not image_urls:
-        return
+    files = download_images(image_urls) if image_urls else []
 
-    files = download_images(image_urls)
-    if not files:
-        return
-
-    payload2 = {"content": "", "allowed_mentions": {"parse": []}}
-    webhook_post_with_files(webhook_url, payload2, files)
+    if files:
+        webhook_post_with_files(webhook_url, payload, files)
+    else:
+        webhook_post_json(webhook_url, payload)
 
 
 def main() -> None:
     state = load_state()
     notified_by_author: Dict[str, List[str]] = state.get("notified_by_author", {})
 
+    # 対象作者（正規化） -> webhook_url
     targets_norm: Dict[str, str] = {norm(k): v for k, v in WEBHOOKS_BY_AUTHOR.items()}
 
-    # このrunで「作者ごとに1件」見つける
+    # このrunで「作者ごとに1件だけ」送るためのバッファ
     pending: Dict[str, Dict] = {}
 
     for url in list_detail_urls():
@@ -244,6 +278,8 @@ def main() -> None:
             continue
 
         pending[author_key] = post
+
+        # 全員分揃ったら打ち切り
         if len(pending) == len(targets_norm):
             break
 
@@ -251,10 +287,11 @@ def main() -> None:
         print("No new target-author posts.")
         return
 
-    # 送信＆state更新（作者ごと）
+    # 作者ごとに送信＆state更新
     for author_key, post in pending.items():
         webhook_url = targets_norm[author_key]
-        post_to_discord(webhook_url, post)
+
+        post_to_discord_A(webhook_url, post)
 
         notified_list = set(notified_by_author.get(author_key, []))
         notified_list.add(post["url"])
