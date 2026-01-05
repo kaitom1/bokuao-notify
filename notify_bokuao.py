@@ -259,7 +259,7 @@ def post_to_discord_embed_then_images(webhook_url: str, post: Dict) -> None:
     }
 
     payload1 = {
-        "content": f"<{post['url']}>",  # クリック可能に。プレビュー暴れ防止で <> に
+        "content": "",  # クリック可能に。プレビュー暴れ防止で <> に
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
