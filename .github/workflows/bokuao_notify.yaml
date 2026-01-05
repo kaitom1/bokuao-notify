@@ -30,6 +30,12 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python notify_bokuao.py
 
+      - name: Save state
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: bokuao-state
+
       - name: Save state (cache)
         uses: actions/cache@v4
         with:
