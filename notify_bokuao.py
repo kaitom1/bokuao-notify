@@ -10,7 +10,7 @@ from typing import List, Dict, Set, Tuple
 LIST_URL = "https://bokuao.com/blog/list/1/0/"
 STATE_FILE = "state.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/5.1)"
+UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/5.2)"
 
 # 1メッセージの添付は最大10枚が無難
 MAX_IMAGES_PER_POST = 10
@@ -21,13 +21,15 @@ MAX_IMAGE_BYTES = 7 * 1024 * 1024
 # 画像URLフィルタ（拡張子ベース）
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
-# Discordのcontentは2000文字上限（超えるとエラーになる）
+# Discordのcontentは2000文字上限（Embedなし版）
 DISCORD_CONTENT_LIMIT = 2000
 
 # 対象メンバー → Webhook URL（環境変数から取得）
+# Secrets / workflow env と一致させること
 WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
     "金澤亜美": os.environ["AMI_KANAZAWA"],
     "早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
+    # 追加するなら例：
     # "安納蒼衣": os.environ["AOI_ANNO"],
 }
 
@@ -104,6 +106,19 @@ def uniq_keep_order(items: List[str]) -> List[str]:
     return out
 
 
+def cut_before_date(lines: List[str]) -> Tuple[List[str], str]:
+    """
+    lines の中から最初の日付行(YYYY.MM.DD)を探し、
+    それ以前を削除して本文linesを返す。
+    戻り値: (本文lines, 日付文字列)
+    """
+    for i, ln in enumerate(lines):
+        m = re.search(r"\b20\d{2}\.\d{2}\.\d{2}\b", ln)
+        if m:
+            return lines[i + 1 :], m.group(0)
+    return lines, "（不明）"
+
+
 def parse_post(post_url: str) -> Dict:
     html = fetch(post_url)
     soup = BeautifulSoup(html, "html.parser")
@@ -141,33 +156,30 @@ def parse_post(post_url: str) -> Dict:
     text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln]
 
-    # 日付
-    date = "（不明）"
-    m = re.search(r"\b20\d{2}\.\d{2}\.\d{2}\b", text)
-    if m:
-        date = m.group(0)
-
-    # タイトル（使わないが保持しておく）
-    title = "（タイトル不明）"
-    if soup.title and soup.title.get_text(strip=True):
-        title = soup.title.get_text(strip=True)
-
-    # 筆者名（推定）
+    # 筆者名（推定）— 日付カット前のlinesから拾う
     author = "（不明）"
     for ln in lines[:120]:
         if 2 <= len(ln) <= 20 and (" " in ln or "　" in ln) and "BLOG" not in ln:
             author = ln
             break
 
+    # 日付より前を削除（本文は日付の次の行から開始）
+    lines, date = cut_before_date(lines)
+
     body = "\n".join(lines)
 
     # 本文終端でカット（「MEMBER CONTENTS」以降を除外）
     body = cut_at_first_marker(body, ["MEMBER CONTENTS"])
 
-    # 本文末尾にフッター（希望の表記を維持）
+    # 本文末尾にフッター
     footer_line = f"{author} / {date}"
     if footer_line not in body:
         body = body.rstrip() + "\n\n" + footer_line
+
+    # タイトルは必須ではないが保持
+    title = "（タイトル不明）"
+    if soup.title and soup.title.get_text(strip=True):
+        title = soup.title.get_text(strip=True)
 
     return {
         "url": post_url,
@@ -236,13 +248,11 @@ def post_to_discord_plain(webhook_url: str, post: Dict) -> None:
     """
     Embedなし：contentに本文を入れ、同じメッセージに画像を添付する
     - contentは2000文字上限があるので切る
-    - URLはプレビューを出したくなければ <> で囲む
+    - URLプレビューが邪魔なら <URL> にする
     """
-    # URLプレビューが邪魔なら <...> にする（プレビュー抑止になりやすい）
     url_text = f"<{post['url']}>"
 
     content = post["body"].strip()
-    # 本文 + URL（必要なら順番は逆でもOK）
     content = f"{content}\n\n{url_text}"
     content = truncate_for_discord(content, DISCORD_CONTENT_LIMIT)
 
