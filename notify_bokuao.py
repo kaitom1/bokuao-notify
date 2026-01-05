@@ -23,7 +23,7 @@ MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 
 # 画像URLフィルタ（拡張子ベース）
-ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+ALLOWED_EXT = (".jpg", ".jpeg")
 
 # Discord embed description は 4096 まで（安全側で4000）
 EMBED_DESC_LIMIT = 4000
@@ -210,7 +210,7 @@ def parse_post(post_url: str) -> Dict:
 
 
 def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
-    """画像URLをダウンロードして (filename, bytes) の配列を返す（大きすぎるものはスキップ）"""
+    """JPEG画像のみをダウンロードして (filename, bytes) を返す"""
     out: List[Tuple[str, bytes]] = []
 
     for i, u in enumerate(urls, start=1):
@@ -218,17 +218,18 @@ def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
             r = requests.get(u, headers={"User-Agent": UA}, timeout=30)
             r.raise_for_status()
 
+            # Content-Type チェック（JPEGのみ）
+            content_type = r.headers.get("Content-Type", "").lower()
+            if not content_type.startswith("image/jpeg"):
+                continue
+
             data = r.content
             if len(data) > MAX_IMAGE_BYTES:
                 continue
 
-            path = urlparse(u).path
-            ext = os.path.splitext(path)[1].lower() or ".jpg"
-            if ext not in ALLOWED_EXT:
-                ext = ".jpg"
-
-            filename = f"image_{i:02d}{ext}"
+            filename = f"image_{i:02d}.jpg"
             out.append((filename, data))
+
         except Exception:
             continue
 
