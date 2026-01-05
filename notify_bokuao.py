@@ -4,58 +4,86 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from typing import List, Dict, Optional, Set
 
 LIST_URL = "https://bokuao.com/blog/list/1/0/"
 STATE_FILE = "state.json"
 
+# Discord Webhook URL は GitHub Secrets から渡す
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
-UA = "Mozilla/5.0 (compatible; BlogNotifier/1.0)"
 
-def load_state():
+# ここを対象者にする（空白ゆれ対応は norm() で吸収）
+TARGET_AUTHOR = "金澤亜美"
+
+UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/1.0)"
+
+
+def norm(s: str) -> str:
+    """空白（半角/全角）を除去して比較できるように正規化"""
+    return re.sub(r"[ \u3000]+", "", (s or "").strip())
+
+
+def fetch(url: str) -> str:
+    r = requests.get(url, headers={"User-Agent": UA}, timeout=30)
+    r.raise_for_status()
+    return r.text
+
+
+def load_state() -> Dict:
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
-def save_state(state):
+
+def save_state(state: Dict) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def fetch(url):
-    r = requests.get(url, headers={"User-Agent": UA}, timeout=30)
-    r.raise_for_status()
-    return r.text
 
-def get_latest_post_url():
+def list_detail_urls() -> List[str]:
+    """一覧ページから detail URL を収集（重複除去、出現順を維持）"""
     html = fetch(LIST_URL)
     soup = BeautifulSoup(html, "html.parser")
 
-    # 一覧ページ内の /blog/detail/xxxxx を先頭から探す（最新が先に出る想定）
-    a = soup.select_one('a[href^="/blog/detail/"], a[href*="/blog/detail/"]')
-    if not a:
-        raise RuntimeError("最新記事リンクが見つかりませんでした（HTML構造変更の可能性）。")
-    return urljoin(LIST_URL, a.get("href"))
+    urls: List[str] = []
+    seen: Set[str] = set()
 
-def parse_post(post_url):
+    for a in soup.select('a[href^="/blog/detail/"], a[href*="/blog/detail/"]'):
+        href = a.get("href")
+        if not href:
+            continue
+        abs_url = urljoin(LIST_URL, href)
+        if abs_url in seen:
+            continue
+        seen.add(abs_url)
+        urls.append(abs_url)
+
+    # 一覧の表示順（通常は新しい順）で返す
+    return urls
+
+
+def parse_post(post_url: str) -> Dict:
+    """
+    記事ページから情報を抽出:
+    - author / date / title / excerpt / image
+    ノイズ（noscript等）を消して抽出。
+    """
     html = fetch(post_url)
     soup = BeautifulSoup(html, "html.parser")
 
-    # 1) ノイズを先に除去（重要：noscript が「JavaScript無効」文言の正体）
+    # ノイズ除去（重要：noscript が「JavaScript無効」文言の原因）
     for tag in soup.find_all(["script", "style", "noscript"]):
         tag.decompose()
-
-    # ヘッダー/フッター/ナビなどが拾われるのも防ぐ（あれば消す）
     for tag in soup.find_all(["header", "footer", "nav"]):
         tag.decompose()
 
-    # 2) 「本文らしい領域」を優先して選ぶ（サイト構造が変わっても壊れにくい）
-    #    main > article > body の順でフォールバック
     container = soup.find("main") or soup.find("article") or soup.body
     if container is None:
-        container = soup  # 最後の保険
+        container = soup
 
-    # 3) 画像：本文領域から最初の1枚を拾う（過度な転載にならないよう1枚まで）
-    img_url = None
+    # 画像（1枚だけ）
+    img_url: Optional[str] = None
     for img in container.find_all("img"):
         src = img.get("src")
         if not src:
@@ -65,24 +93,32 @@ def parse_post(post_url):
             img_url = abs_src
             break
 
-    # 4) テキスト抽出（本文領域のみ）
+    # テキスト
     text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln]
 
-    # 5) 日付っぽい表記（例: 2026.01.05）
+    # 日付（例: 2026.01.05）
     date = None
     m = re.search(r"\b20\d{2}\.\d{2}\.\d{2}\b", text)
     if m:
         date = m.group(0)
 
-    # 6) 筆者名の簡易推定（上部の短い行から拾う）
+    # タイトル（titleタグ優先）
+    title = None
+    if soup.title and soup.title.get_text(strip=True):
+        title = soup.title.get_text(strip=True)
+
+    # 筆者：ページ上部近辺の短い行から「氏名っぽい」ものを推定
+    # ただし、最終的な判定は norm(author) == norm(TARGET_AUTHOR) で行う。
     author = None
-    for ln in lines[:80]:
+    for ln in lines[:120]:
+        # 例: "金澤 亜美" のような表記を想定
+        # 短めで、空白が含まれる日本語氏名を拾う
         if 2 <= len(ln) <= 20 and (" " in ln or "　" in ln) and "BLOG" not in ln:
             author = ln
             break
 
-    # 7) 抜粋（最大400文字）
+    # 抜粋（最大400文字）
     body = "\n".join(lines)
     excerpt = body[:400] + ("…" if len(body) > 400 else "")
 
@@ -90,43 +126,78 @@ def parse_post(post_url):
         "url": post_url,
         "author": author or "（不明）",
         "date": date or "（不明）",
+        "title": title or "（タイトル不明）",
         "excerpt": excerpt,
         "image": img_url,
     }
 
-def post_to_discord(post):
+
+def post_to_discord(post: Dict) -> None:
+    """
+    Discord Webhook へ送信（Embed使用）
+    """
+    # タイトル欄は Discord で見やすいように整形
+    # titleはページtitleが長いことがあるので、必要なら短縮
+    embed_title = post["title"]
+    if len(embed_title) > 120:
+        embed_title = embed_title[:117] + "…"
+
     embed = {
-        "title": f"{post['author']} / {post['date']}",
+        "title": embed_title,
         "url": post["url"],
         "description": post["excerpt"],
+        "footer": {"text": f"{post['author']} / {post['date']}"},
     }
-    if post["image"]:
+
+    if post.get("image"):
         embed["image"] = {"url": post["image"]}
 
     payload = {
-        "content": post["url"],
+        "content": post["url"],  # URLも明示（Discordの自動展開も期待できる）
         "embeds": [embed],
-        "allowed_mentions": {"parse": []},
+        "allowed_mentions": {"parse": []},  # @everyone 等の誤爆防止
     }
 
     r = requests.post(WEBHOOK_URL, json=payload, timeout=30)
     r.raise_for_status()
 
-def main():
-    state = load_state()
-    last_url = state.get("last_url")
 
-    latest_url = get_latest_post_url()
-    if latest_url == last_url:
-        print("No update.")
+def main() -> None:
+    state = load_state()
+    notified: Set[str] = set(state.get("notified_urls", []))
+
+    # 一覧から候補を取り、未通知のものだけ新しい順で処理
+    candidates = list_detail_urls()
+
+    # 新しい順の一覧を想定して、未通知を上から探す
+    # 「金澤亜美」の最初の未通知記事が見つかったらそれを通知して終了（1日1回想定）
+    for url in candidates:
+        if url in notified:
+            continue
+
+        post = parse_post(url)
+
+        # 筆者判定（空白ゆれを吸収）
+        if norm(post["author"]) != norm(TARGET_AUTHOR):
+            # 対象外。必要ならここでスキップだけして、次候補へ。
+            # （対象者以外のURLは state に記録しない＝将来対象者の記事を探すため）
+            continue
+
+        # 対象者の記事だったら通知
+        post_to_discord(post)
+
+        # 通知済みとして保存
+        notified.add(url)
+        state["notified_urls"] = sorted(notified)  # 見やすさ重視でソート
+        save_state(state)
+
+        print("Posted:", url)
         return
 
-    post = parse_post(latest_url)
-    post_to_discord(post)
+    print("No new target-author posts.")
 
-    state["last_url"] = latest_url
-    save_state(state)
-    print("Posted:", latest_url)
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
