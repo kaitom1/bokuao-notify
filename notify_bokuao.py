@@ -66,41 +66,11 @@ def cut_at_first_marker(text: str, markers: List[str]) -> str:
     return text[:min(idxs)].rstrip()
 
 
-def strip_leading_header(lines: List[str], author: Optional[str], date: Optional[str]) -> List[str]:
-    """
-    先頭ヘッダーをパターンで除去する（タイトル=先頭行は残す）
-    想定パターン:
-      1) TITLE / AUTHOR / DATE
-      2) TITLE / AUTHOR / TITLE / DATE（タイトル再掲あり）
-    タイトルは毎回可変（絵文字/文字列/記号など何でも）
-    """
-    if not lines or len(lines) < 3:
-        return lines
-    if not author or not date:
-        # 筆者 or 日付が取れないと安全に判定できないため何もしない
-        return lines
-
-    t0 = lines[0].strip()
-    a1 = lines[1].strip()
-
-    # パターン1: TITLE / AUTHOR / DATE
-    if norm(a1) == norm(author) and lines[2].strip() == date:
-        return [lines[0]] + lines[3:]
-
-    # パターン2: TITLE / AUTHOR / TITLE / DATE（タイトル再掲あり）
-    if len(lines) >= 4:
-        t2 = lines[2].strip()
-        d3 = lines[3].strip()
-        if norm(a1) == norm(author) and d3 == date and t2 == t0:
-            return [lines[0]] + lines[4:]
-
-    return lines
-
-
 def parse_post(post_url: str) -> Dict:
     """
     記事ページから情報を抽出:
     - author / date / title / body / image
+    ノイズ（noscript等）を消して抽出。
     """
     html = fetch(post_url)
     soup = BeautifulSoup(html, "html.parser")
@@ -126,28 +96,27 @@ def parse_post(post_url: str) -> Dict:
             img_url = abs_src
             break
 
-    # テキスト（本文候補）
+    # テキスト
     text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln]
 
-    # 日付（例: 2026.01.05）※全体から拾う
+    # 日付（例: 2026.01.05）
     date = None
     m = re.search(r"\b20\d{2}\.\d{2}\.\d{2}\b", text)
     if m:
         date = m.group(0)
 
+    # タイトル（titleタグ優先）
+    title = None
+    if soup.title and soup.title.get_text(strip=True):
+        title = soup.title.get_text(strip=True)
+
     # 筆者：ページ上部近辺の短い行から推定
     author = None
     for ln in lines[:120]:
         if 2 <= len(ln) <= 20 and (" " in ln or "　" in ln) and "BLOG" not in ln:
-            author = ln.strip()
+            author = ln
             break
-
-    # 先頭ヘッダー（TITLE/AUTHOR/DATE 等）を除去（タイトル=先頭行は残す）
-    lines = strip_leading_header(lines, author, date)
-
-    # タイトル：先頭行を採用（可変タイトル対応）
-    title = lines[0].strip() if lines else "（タイトル不明）"
 
     body = "\n".join(lines)
 
@@ -163,7 +132,7 @@ def parse_post(post_url: str) -> Dict:
         "url": post_url,
         "author": author or "（不明）",
         "date": date or "（不明）",
-        "title": title,
+        "title": title or "（タイトル不明）",
         "body": body,
         "image": img_url,
     }
@@ -178,7 +147,7 @@ def post_to_discord(post: Dict) -> None:
     embed = {
         "title": embed_title,
         "url": post["url"],
-        "description": post["body"][:4000],  # embed description上限（4096）対策
+        "description": post["body"][:4000],  # embed description上限対策（4096）
     }
 
     if post.get("image"):
@@ -220,6 +189,10 @@ def main() -> None:
         return
 
     print("No new target-author posts.")
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
