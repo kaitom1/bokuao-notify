@@ -122,14 +122,23 @@ def parse_post(post_url: str) -> Dict:
     body = "\n".join(lines)
 
     return {
-        "url": post_url,
-        "author": author or "（不明）",
-        "date": date or "（不明）",
-        "title": title or "（タイトル不明）",
-        "body": body,
-        "image": img_url,
-    }
+    "url": post_url,
+    "author": author or "（不明）",
+    "date": date or "（不明）",
+    "title": title or "（タイトル不明）",
+    "body": body,
+    "image": img_url,
+}
+　　 # 本文の終了（共通UI）でカットする：本文は「またね」までにしたい
+     END_MARKERS = ["MEMBER CONTENTS"]
 
+     def cut_at_first_marker(text: str, markers):
+         idxs = [text.find(m) for m in markers if text.find(m) != -1]
+         if not idxs:
+             return text
+        return text[:min(idxs)].rstrip()
+
+     body = cut_at_first_marker(body, END_MARKERS)
 
 def post_to_discord(post: Dict) -> None:
     """
