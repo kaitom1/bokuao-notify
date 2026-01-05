@@ -118,10 +118,25 @@ def parse_post(post_url: str) -> Dict:
             author = ln
             break
 
-    # 抜粋（最大400文字）
     body = "\n".join(lines)
 
-    return {
+# 本文終端：共通UIの開始でカット（本文は「またね」までにしたい）
+END_MARKERS = ["MEMBER CONTENTS"]
+
+def cut_at_first_marker(text: str, markers):
+    idxs = [text.find(m) for m in markers if text.find(m) != -1]
+    if not idxs:
+        return text.rstrip()
+    return text[:min(idxs)].rstrip()
+
+body = cut_at_first_marker(body, END_MARKERS)
+
+# 本文末尾にフッターを付ける（希望：B）
+footer_line = f"{author or '（不明）'} / {date or '（不明）'}"
+if footer_line not in body:
+    body = body.rstrip() + "\n\n" + footer_line
+
+return {
     "url": post_url,
     "author": author or "（不明）",
     "date": date or "（不明）",
@@ -129,18 +144,6 @@ def parse_post(post_url: str) -> Dict:
     "body": body,
     "image": img_url,
 }
-
-　　 # 本文の終了（共通UI）でカットする：本文は「またね」までにしたい
-END_MARKERS = ["MEMBER CONTENTS"]
-
-def cut_at_first_marker(text: str, markers):
-    idxs = [text.find(m) for m in markers if text.find(m) != -1]
-    if not idxs:
-        return text
-    return text[:min(idxs)].rstrip()
-
-body = cut_at_first_marker(body, END_MARKERS)
-
 
 def post_to_discord(post: Dict) -> None:
     """
