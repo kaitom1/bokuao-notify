@@ -2,10 +2,10 @@ name: bokuao-news-notify
 
 on:
   schedule:
-    - cron: "5 21 * * *"   # JST 06:05
-    - cron: "5 3 * * *"    # JST 12:05
-    - cron: "5 9 * * *"    # JST 18:05
-    - cron: "59 14 * * *"  # JST 23:59
+    - cron: "00 03 * * *"    # JST 12:00
+    - cron: "00 09 * * *"    # JST 18:00
+    - cron: "00 12 * * *"  # JST 21:00
+    - cron: "30 14 * * *"  # JST 23:30
   workflow_dispatch:
 
 jobs:
