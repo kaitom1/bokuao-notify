@@ -26,7 +26,7 @@ jobs:
       - name: Run news notifier
         env:
           BOKUAO_NEWS: ${{ secrets.BOKUAO_NEWS }}
-        run: python notify_bokuao_news.py
+        run: python bokuao_news.py
 
       - uses: actions/cache@v4
         with:
