@@ -245,15 +245,12 @@ def truncate_for_discord(s: str, limit: int) -> str:
 
 
 def post_to_discord_plain(webhook_url: str, post: Dict) -> None:
-    """
-    Embedなし：contentに本文を入れ、同じメッセージに画像を添付する
-    - contentは2000文字上限があるので切る
-    - URLプレビューが邪魔なら <URL> にする
-    """
     url_text = f"<{post['url']}>"
 
-    content = post["body"].strip()
-    content = f"{content}\n\n{url_text}"
+    title = (post.get("title") or "").strip()
+    header = f"【{title}】\n\n" if title and title != "（タイトル不明）" else ""
+
+    content = f"{header}{post['body'].strip()}\n\n{url_text}"
     content = truncate_for_discord(content, DISCORD_CONTENT_LIMIT)
 
     payload = {
