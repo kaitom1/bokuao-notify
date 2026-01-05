@@ -30,6 +30,7 @@ jobs:
           AMI_KANAZAWA: ${{ secrets.AMI_KANAZAWA }}
           SUZUKI_HAYASAKI: ${{ secrets.SUZUKI_HAYASAKI }}
           AOI_ANNO: ${{ secrets.AOI_ANNO }}
+          NANA_SHIOGAMA: ${{ secrets.NANA_SHIOGAMA }}
         run: python notify_bokuao.py
 
       - name: Save state
