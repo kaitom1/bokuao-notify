@@ -335,7 +335,8 @@ def main() -> None:
 
     #today = today_jst_str()
     target_date = yesterday_jst_str()
-    print("JST today =", today)
+    print("JST target_date =", target_date)
+    #print("JST today =", today)
 
     # news と同じ：今日の記事は「複数」送る
     to_send: List[Tuple[str, Dict]] = []  # (author_key, post)
