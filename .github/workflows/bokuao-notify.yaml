@@ -2,10 +2,11 @@ name: bokuao-blog-notify
 
 on:
   schedule:
-    - cron: "00 09 * * *" #JST18:00
-    - cron: "00 12 * * *" #JST21:00
-    - cron: "00 14 * * *" #JST23:00
-    - cron: "30 14 * * *" #JST23:30
+    # cron は UTC
+    - cron: "00 09 * * *"  # JST 18:00
+    - cron: "00 12 * * *"  # JST 21:00
+    - cron: "00 14 * * *"  # JST 23:00
+    - cron: "30 14 * * *"  # JST 23:30
   workflow_dispatch:
 
 jobs:
@@ -21,7 +22,8 @@ jobs:
       - name: Install deps
         run: pip install requests beautifulsoup4
 
-      - name: Restore state
+      # ★ これだけで restore + save 両方やる
+      - name: Cache state
         uses: actions/cache@v4
         with:
           path: state.json
@@ -50,15 +52,3 @@ jobs:
           AYA_NISHIMORI: ${{ secrets.AYA_NISHIMORI }}
           MIISA_YAEGASHI: ${{ secrets.MIISA_YAEGASHI }}
         run: python notify_bokuao.py
-
-      - name: Save state
-        uses: actions/cache@v4
-        with:
-          path: state.json
-          key: bokuao-state
-
-      - name: Save state (cache)
-        uses: actions/cache@v4
-        with:
-          path: state.json
-          key: bokuao-state
