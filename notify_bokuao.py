@@ -54,7 +54,8 @@ WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
 }
 
 
-def today_jst_str() -> str:
+def yestaday_jst_str() -> str:
+    #today_jst_str() -> str:
     jst = timezone(timedelta(hours=9))
     return datetime.now(jst).strftime("%Y.%m.%d")
 
@@ -329,7 +330,8 @@ def main() -> None:
 
     targets_norm: Dict[str, str] = {norm(k): v for k, v in WEBHOOKS_BY_AUTHOR.items()}
 
-    today = today_jst_str()
+    #today = today_jst_str()
+    target_date = yesterday_jst_str()
     print("JST today =", today)
 
     # news と同じ：今日の記事は「複数」送る
@@ -339,7 +341,8 @@ def main() -> None:
         post = parse_post(url)
 
         # 今日の記事だけ
-        if post.get("date") != today:
+        #if post.get("date") != today:
+        if post.get("date") != target_date:
             continue
 
         author_key = norm(post.get("author"))
