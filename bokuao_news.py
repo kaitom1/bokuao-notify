@@ -11,23 +11,18 @@ from typing import List, Dict, Set, Tuple
 NEWS_LIST_URL = "https://bokuao.com/news/1/"
 STATE_FILE = "state_news.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/1.0)"
+UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/2.0)"
 
-# Discordのcontent上限
+# Discord limits
 DISCORD_CONTENT_LIMIT = 2000
+EMBED_TITLE_LIMIT = 256
+EMBED_DESC_LIMIT = 4000  # 4096未満の安全側
 
-# 1メッセージの添付は最大10枚が無難
 MAX_IMAGES_PER_POST = 10
-
-# 画像のサイズ上限（バイト）
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
-
-# 画像URLフィルタ（拡張子ベース）
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
-# NEWS用Webhook（newsチャンネル）
 NEWS_WEBHOOK_URL = os.environ["BOKUAO_NEWS"]
-
 NEWS_DATE_RE = re.compile(r"\b20\d{2}\.\d{2}\.\d{2}\b")
 
 
@@ -55,7 +50,9 @@ def save_state(state: Dict) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def truncate_for_discord(s: str, limit: int) -> str:
+def truncate(s: str, limit: int) -> str:
+    if s is None:
+        return ""
     if len(s) <= limit:
         return s
     return s[: max(0, limit - 1)] + "…"
@@ -91,6 +88,7 @@ def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
         try:
             r = requests.get(u, headers={"User-Agent": UA}, timeout=30)
             r.raise_for_status()
+
             data = r.content
             if len(data) > MAX_IMAGE_BYTES:
                 continue
@@ -187,13 +185,18 @@ def parse_news_detail(detail_url: str) -> Dict:
     image_urls: List[str] = []
     for img in container.find_all("img"):
         src = (
-            img.get("src")
-            or img.get("data-src")
+            img.get("data-src")
             or img.get("data-original")
             or img.get("data-lazy")
+            or img.get("src")
         )
         if not src:
             continue
+
+        # data:image は除外
+        if src.strip().lower().startswith("data:image/"):
+            continue
+
         abs_src = urljoin(detail_url, src)
         if abs_src.startswith(("http://", "https://")) and is_image_url(abs_src):
             image_urls.append(abs_src)
@@ -211,12 +214,13 @@ def parse_news_detail(detail_url: str) -> Dict:
             date = m.group(0)
             break
 
-    # ノイズっぽい末尾を削る（ページにより変動するので軽め）
     body = "\n".join(lines)
     body = cut_at_first_marker(body, ["SHARE", "BACK", "SUPPORT"])
 
-    # 冒頭にカテゴリ/日付/タイトル等が混ざる場合があるので簡単に整形
-    body_lines = [ln for ln in body.split("\n") if ln and ln not in ("NEWS", "SHARE", "BACK", "SUPPORT")]
+    body_lines = [
+        ln for ln in body.split("\n")
+        if ln and ln not in ("NEWS", "SHARE", "BACK", "SUPPORT")
+    ]
     body_clean = "\n".join(body_lines).strip()
 
     return {
@@ -227,30 +231,51 @@ def parse_news_detail(detail_url: str) -> Dict:
     }
 
 
-def post_news_item(item: Dict) -> None:
+def post_news_item_embed_then_images(item: Dict) -> None:
+    """
+    1通目：Embed（title/url/description）
+    2通目：画像だけ添付（最大10枚）
+    """
     detail = parse_news_detail(item["url"])
 
     title = item.get("title") or "（タイトル不明）"
+    category = item.get("category") or "（不明）"
+    date = item.get("date") or detail.get("date") or "（不明）"
 
-    # タイトルを太字＋【】＋URL埋め込み
-    header = f"**[{title}]({item['url']})**\n\n"
+    embed_title = truncate(title, EMBED_TITLE_LIMIT)
+    embed_desc = truncate((detail.get("body") or "").strip(), EMBED_DESC_LIMIT)
 
-    body = (detail.get("body") or "").strip()
-    content = header + body
-    content = truncate_for_discord(content, DISCORD_CONTENT_LIMIT)
-
-    payload = {
-        "content": content,
-        "allowed_mentions": {"parse": []},
+    embed = {
+        "title": embed_title,
+        "url": item["url"],
+        "description": embed_desc,
+        # 見出し情報をEmbed内に寄せる（contentは空）
+        "footer": {"text": f"{category} / {date}"},
     }
 
-    imgs = (detail.get("images") or [])[:MAX_IMAGES_PER_POST]
-    files = download_images(imgs) if imgs else []
+    payload1 = {
+        "content": "",
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+    }
+    webhook_post_json(payload1)
 
-    if files:
-        webhook_post_with_files(payload, files)
-    else:
-        webhook_post_json(payload)
+    # レート制限回避
+    time.sleep(0.9)
+
+    imgs = (detail.get("images") or [])[:MAX_IMAGES_PER_POST]
+    if not imgs:
+        return
+
+    files = download_images(imgs)
+    if not files:
+        return
+
+    payload2 = {
+        "content": "",
+        "allowed_mentions": {"parse": []},
+    }
+    webhook_post_with_files(payload2, files)
 
 
 def main() -> None:
@@ -274,11 +299,9 @@ def main() -> None:
             skipped += 1
             continue
 
-        post_news_item(it)
+        post_news_item_embed_then_images(it)
         notified.add(it["url"])
         posted += 1
-
-        # レート制限回避
         time.sleep(1.0)
 
     state["notified_news_urls"] = sorted(notified)
