@@ -245,12 +245,14 @@ def post_news_item_embed_then_images(item: Dict) -> None:
     embed_title = truncate(title, EMBED_TITLE_LIMIT)
     embed_desc = truncate((detail.get("body") or "").strip(), EMBED_DESC_LIMIT)
 
+    embed_desc = embed_desc.rstrip() + f"\n\n**{category} / {date}**"
+
     embed = {
         "title": embed_title,
         "url": item["url"],
         "description": embed_desc,
         # 見出し情報をEmbed内に寄せる（contentは空）
-        "footer": {"text": f"{category} / {date}"},
+        #"footer": {"text": f"{category} / {date}"},
     }
 
     payload1 = {
