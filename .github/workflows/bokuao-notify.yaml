@@ -2,11 +2,10 @@ name: bokuao-blog-notify
 
 on:
   schedule:
-    # cron は UTC
-    - cron: "00 09 * * *"  # JST 18:00
-    - cron: "00 12 * * *"  # JST 21:00
-    - cron: "00 14 * * *"  # JST 23:00
-    - cron: "30 14 * * *"  # JST 23:30
+    - cron: "00 09 * * *" # JST 18:00
+    - cron: "00 12 * * *" # JST 21:00
+    - cron: "00 14 * * *" # JST 23:00
+    - cron: "30 14 * * *" # JST 23:30
   workflow_dispatch:
 
 jobs:
@@ -22,12 +21,14 @@ jobs:
       - name: Install deps
         run: pip install requests beautifulsoup4
 
-      # ★ これだけで restore + save 両方やる
-      - name: Cache state
-        uses: actions/cache@v4
+      # 1) まず復元（最新の state を拾う）
+      - name: Restore state
+        uses: actions/cache/restore@v4
         with:
           path: state.json
-          key: bokuao-state
+          key: bokuao-state-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            bokuao-state-${{ runner.os }}-
 
       - name: Run notifier
         env:
@@ -52,3 +53,11 @@ jobs:
           AYA_NISHIMORI: ${{ secrets.AYA_NISHIMORI }}
           MIISA_YAEGASHI: ${{ secrets.MIISA_YAEGASHI }}
         run: python notify_bokuao.py
+
+      # 2) 実行後の state を必ず保存（毎回ユニークkeyで新規保存）
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: bokuao-state-${{ runner.os }}-${{ github.run_id }}
