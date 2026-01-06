@@ -4,8 +4,8 @@ on:
   schedule:
     - cron: "00 09 * * *" # JST 18:00
     - cron: "00 12 * * *" # JST 21:00
+    - cron: "00 13 * * *" # JST 22:00
     - cron: "00 14 * * *" # JST 23:00
-    - cron: "30 14 * * *" # JST 23:30
   workflow_dispatch:
 
 jobs:
