@@ -20,7 +20,7 @@ EMBED_DESC_LIMIT = 4000  # 4096未満の安全側
 
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
-ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+ALLOWED_EXT = (".jpg", ".jpeg")
 
 NEWS_WEBHOOK_URL = os.environ["BOKUAO_NEWS"]
 NEWS_DATE_RE = re.compile(r"\b20\d{2}\.\d{2}\.\d{2}\b")
