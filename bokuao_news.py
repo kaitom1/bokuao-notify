@@ -303,7 +303,7 @@ def post_news_item_embed_then_images(item: Dict) -> None:
     # 本文作成 → 先頭見出しブロック削除 → 末尾にカテゴリ/日付を太字で追記
     embed_desc = truncate((detail.get("body") or "").strip(), EMBED_DESC_LIMIT)
     embed_desc = strip_leading_header_lines(embed_desc, title, category, date)
-    embed_desc = embed_desc.rstrip() + f"\n\n**{category} / {date}**"
+    embed_desc = embed_desc.rstrip() + f"\n\n{category} / {date}"
 
     embed = {
         "title": embed_title,
