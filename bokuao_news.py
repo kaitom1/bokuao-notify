@@ -233,7 +233,7 @@ def post_news_item(item: Dict) -> None:
     title = item.get("title") or "（タイトル不明）"
 
     # タイトルを太字＋【】＋URL埋め込み
-    header = f"**【[{title}]({item['url']})】**\n\n"
+    header = f"**[{title}]({item['url']})**\n\n"
 
     body = (detail.get("body") or "").strip()
     content = header + body
