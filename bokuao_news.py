@@ -217,11 +217,23 @@ def parse_news_detail(detail_url: str) -> Dict:
     body = "\n".join(lines)
     body = cut_at_first_marker(body, ["SHARE", "BACK", "SUPPORT"])
 
-    body_lines = [
-        ln for ln in body.split("\n")
-        if ln and ln not in ("NEWS", "SHARE", "BACK", "SUPPORT")
-    ]
-    body_clean = "\n".join(body_lines).strip()
+    body_lines = [ln for ln in body.split("\n") if ln]
+
+    # --- ヘッダ部分（タイトル・日付・カテゴリ）を除去 ---
+    cleaned_lines = []
+    skip = True
+    for ln in body_lines:
+        # 日付 or カテゴリ行が出るまでは捨てる
+        if skip:
+            if NEWS_DATE_RE.search(ln) or ln in ("OTHER", "NEWS", "EVENT", "MEDIA"):
+                continue
+            else:
+                # 最初の本文らしい行が出たら開始
+                skip = False
+        if not skip:
+            cleaned_lines.append(ln)
+
+    body_clean = "\n".join(cleaned_lines).strip()
 
     return {
         "url": detail_url,
