@@ -17,17 +17,15 @@ STATE_FILE = "state.json"
 
 UA = "Mozilla/5.0 (compatible; BokuaoDiscordNotifier/7.0)"
 
-# 1メッセージの添付は最大10枚が無難
 MAX_IMAGES_PER_POST = 10
-
-# 画像のサイズ上限（バイト）
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 
-# JPEGのみ（URLの拡張子）
+# JPEGのみ（URL拡張子）
 ALLOWED_EXT = (".jpg", ".jpeg")
 
 # Discord embed description は 4096 まで（安全側で4000）
 EMBED_DESC_LIMIT = 4000
+
 
 # 対象メンバー → Webhook URL（環境変数から取得）
 WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
@@ -54,13 +52,16 @@ WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
 }
 
 
-def today_jst_str() -> str:
+def target_date_by_jst_window() -> str:
+    """
+    表示日付ベース：
+      JST 06:00-23:59 -> 今日
+      JST 00:00-05:59 -> 昨日
+    """
     jst = timezone(timedelta(hours=9))
-    return datetime.now(jst).strftime("%Y.%m.%d")
-
-#defdef def yesterday_() -> str:
-    #jst = timezone(timedelta(hours=9))
-    #return (datetime.now(jst) - timedelta(days=1)).strftime("%Y.%m.%d")
+    now = datetime.now(jst)
+    target = now - timedelta(days=1) if now.hour < 6 else now
+    return target.strftime("%Y.%m.%d")
 
 
 def norm(s: str) -> str:
@@ -180,7 +181,6 @@ def parse_post(post_url: str) -> Dict:
         if not src:
             continue
 
-        # data:image のような埋め込みは除外
         if src.strip().lower().startswith("data:image/"):
             continue
 
@@ -189,11 +189,9 @@ def parse_post(post_url: str) -> Dict:
             continue
 
         low = abs_src.lower()
-        # 透明プレースホルダーっぽい語を含むものは除外
         if any(x in low for x in ("transparent", "spacer", "blank", "pixel", "placeholder")):
             continue
 
-        # URL拡張子でJPEGのみ許可
         if is_image_url(abs_src):
             image_urls.append(abs_src)
 
@@ -214,16 +212,12 @@ def parse_post(post_url: str) -> Dict:
     lines, date = cut_before_date(lines)
 
     body = "\n".join(lines)
-
-    # 本文終端でカット（「MEMBER CONTENTS」以降を除外）
     body = cut_at_first_marker(body, ["MEMBER CONTENTS"])
 
-    # 本文末尾にフッター（Embedのfooterは使わない）
     footer_line = f"{author} / {date}"
     if footer_line not in body:
         body = body.rstrip() + "\n\n" + footer_line
 
-    # タイトル（titleタグ）
     title = "（タイトル不明）"
     if soup.title and soup.title.get_text(strip=True):
         title = soup.title.get_text(strip=True)
@@ -247,7 +241,6 @@ def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
             r = requests.get(u, headers={"User-Agent": UA}, timeout=30)
             r.raise_for_status()
 
-            # Content-Type チェック（JPEGのみ）
             content_type = (r.headers.get("Content-Type") or "").lower()
             if not content_type.startswith("image/jpeg"):
                 continue
@@ -286,8 +279,8 @@ def webhook_post_with_files(webhook_url: str, payload: Dict, files: List[Tuple[s
 
 def post_to_discord_embed_then_images(webhook_url: str, post: Dict) -> None:
     """
-    1通目：Embedで本文（URLはembedのurlにだけ入れる＝先頭contentは空）
-    2通目：画像だけを添付でまとめて送る（Embed外）
+    1通目：Embedで本文（URLはembed.url、contentは空）
+    2通目：画像だけ添付（最大10枚）
     """
     embed_title = post.get("title") or "（タイトル不明）"
     if len(embed_title) > 256:
@@ -304,7 +297,7 @@ def post_to_discord_embed_then_images(webhook_url: str, post: Dict) -> None:
     }
 
     payload1 = {
-        "content": "",  # 先頭URLは出さない
+        "content": "",
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
@@ -333,20 +326,16 @@ def main() -> None:
 
     targets_norm: Dict[str, str] = {norm(k): v for k, v in WEBHOOKS_BY_AUTHOR.items()}
 
-    #target_date = yesterday_jst_str()
-    #print("JST target_date =", target_date)
-    today = today_jst_str()
-    print("JST today =", today)
+    target_date = target_date_by_jst_window()
+    print("Target date (JST window) =", target_date)
 
-    # news と同じ：今日の記事は「複数」送る
     to_send: List[Tuple[str, Dict]] = []  # (author_key, post)
 
     for url in list_detail_urls():
         post = parse_post(url)
 
-        # 今日の記事だけ
-        #if post.get("date") != target_date:
-        if post.get("date") != today:
+        # 表示日付が target_date の記事だけ
+        if post.get("date") != target_date:
             continue
 
         author_key = norm(post.get("author"))
@@ -360,7 +349,7 @@ def main() -> None:
         to_send.append((author_key, post))
 
     if not to_send:
-        print("No new target-author posts for today.")
+        print("No new target-author posts for target_date.")
         return
 
     # 送信（一覧順のまま：新しい順を維持）
