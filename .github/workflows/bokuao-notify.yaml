@@ -35,20 +35,20 @@ jobs:
           NANA_SHIOGAMA: ${{ secrets.NANA_SHIOGAMA }}
           KOKOKA_HAGIWARA: ${{ secrets.KOKOKA_HAGIWARA }}
           YUA_KUDO: ${{ secrets.YUA_KUDO }}
-          #AOI_ANNO: ${{ secrets.AOI_ANNO }}
-          #NANA_SHIOGAMA: ${{ secrets.NANA_SHIOGAMA }}
-          #AMI_KANAZAWA: ${{ secrets.AMI_KANAZAWA }}
-          #SUZUKI_HAYASAKI: ${{ secrets.SUZUKI_HAYASAKI }}
-          #AOI_ANNO: ${{ secrets.AOI_ANNO }}
-          #NANA_SHIOGAMA: ${{ secrets.NANA_SHIOGAMA }}
-          #AMI_KANAZAWA: ${{ secrets.AMI_KANAZAWA }}
-          #SUZUKI_HAYASAKI: ${{ secrets.SUZUKI_HAYASAKI }}
-          #AOI_ANNO: ${{ secrets.AOI_ANNO }}
-          #NANA_SHIOGAMA: ${{ secrets.NANA_SHIOGAMA }}
-          #AMI_KANAZAWA: ${{ secrets.AMI_KANAZAWA }}
-          #SUZUKI_HAYASAKI: ${{ secrets.SUZUKI_HAYASAKI }}
-          #AOI_ANNO: ${{ secrets.AOI_ANNO }}
-          #NANA_SHIOGAMA: ${{ secrets.NANA_SHIOGAMA }}
+          EREN_SUGIURA: ${{ secrets.EREN_SUGIURA }}
+          TOA_YAGI: ${{ secrets.TOA_YAGI }}
+          MIUNA_SUNAGA: ${{ secrets.MIUNA_SUNAGA }}
+          KAREN_YANAGIHORI: ${{ secrets.KAREN_YANAGIHORI }}
+          HITOMI_HASEGAWA: ${{ secrets.HITOMI_HASEGAWA }}
+          YUHO_AOKI: ${{ secrets.YUHO_AOKI }}
+          COCONA_YOSHIMOTO: ${{ secrets.COCONA_YOSHIMOTO }}
+          YUZU_ITO: ${{ secrets.YUZU_ITO }}
+          YUKI_IMAI: ${{ secrets.YUKI_IMAI }}
+          RIAN_AKITA: ${{ secrets.RIAN_AKITA }}
+          YURIA_MIYAKOSHI: ${{ secrets.YURIA_MIYAKOSHI }}
+          RIKO_IWAMOTO: ${{ secrets.RIKO_IWAMOTO }}
+          AYA_NISHIMORI: ${{ secrets.AYA_NISHIMORI }}
+          MIISA_YAEGASHI: ${{ secrets.MIISA_YAEGASHI }}
         run: python notify_bokuao.py
 
       - name: Save state
