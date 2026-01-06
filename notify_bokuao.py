@@ -33,34 +33,34 @@ EMBED_DESC_LIMIT = 4000
 WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
     "金澤亜美": os.environ["AMI_KANAZAWA"],
     "早﨑すずき": os.environ["SUZUKI_HAYASAKI"],
-    #"安納蒼衣": os.environ["AOI_ANNO"],
+    "安納蒼衣": os.environ["AOI_ANNO"],
     "塩釜菜那": os.environ["NANA_SHIOGAMA"],
-    #"萩原心花": os.environ["KOKOKA_HAGIWARA"],
-    #"工藤唯愛": os.environ["YUA_KUDO"],
-    #"須永心海": os.environ["MIUNA_SUNAGA"],
-    #"吉本此那": os.environ["COCONA_YOSHIMOTO"],
-    #"八重樫美伊咲": os.environ["MIISA_YAEGASHI"],
-    #"八木仁愛": os.environ["TOA_YAGI"],
-    #"西森杏弥": os.environ["AYA_NISHIMORI"],
-    #"宮腰友里亜": os.environ["YURIA_MIYAKOSHI"],
-    #"青木宙帆": os.environ["YUHO_AOKI"],
-    #"岩本理瑚": os.environ["RIKO_IWAMOTO"],
-    #"秋田莉杏": os.environ["RIAN_AKITA"],
-    #"伊藤ゆず": os.environ["YUZU_ITO"],
-    #"長谷川稀未": os.environ["HITOMI_HASEGAWA"],
-    #"柳堀花怜": os.environ["KAREN_YANAGIHORI"],
-    #"杉浦英恋": os.environ["EREN_SUGIURA"],
-    #"今井優希": os.environ["YUKI_IMAI"],
+    "萩原心花": os.environ["KOKOKA_HAGIWARA"],
+    "工藤唯愛": os.environ["YUA_KUDO"],
+    "須永心海": os.environ["MIUNA_SUNAGA"],
+    "吉本此那": os.environ["COCONA_YOSHIMOTO"],
+    "八重樫美伊咲": os.environ["MIISA_YAEGASHI"],
+    "八木仁愛": os.environ["TOA_YAGI"],
+    "西森杏弥": os.environ["AYA_NISHIMORI"],
+    "宮腰友里亜": os.environ["YURIA_MIYAKOSHI"],
+    "青木宙帆": os.environ["YUHO_AOKI"],
+    "岩本理瑚": os.environ["RIKO_IWAMOTO"],
+    "秋田莉杏": os.environ["RIAN_AKITA"],
+    "伊藤ゆず": os.environ["YUZU_ITO"],
+    "長谷川稀未": os.environ["HITOMI_HASEGAWA"],
+    "柳堀花怜": os.environ["KAREN_YANAGIHORI"],
+    "杉浦英恋": os.environ["EREN_SUGIURA"],
+    "今井優希": os.environ["YUKI_IMAI"],
 }
 
 
-#def today_jst_str() -> str:
-    #jst = timezone(timedelta(hours=9))
-    #return datetime.now(jst).strftime("%Y.%m.%d")
-
-def yesterday_jst_str() -> str:
+def today_jst_str() -> str:
     jst = timezone(timedelta(hours=9))
-    return (datetime.now(jst) - timedelta(days=1)).strftime("%Y.%m.%d")
+    return datetime.now(jst).strftime("%Y.%m.%d")
+
+#defdef def yesterday_() -> str:
+    #jst = timezone(timedelta(hours=9))
+    #return (datetime.now(jst) - timedelta(days=1)).strftime("%Y.%m.%d")
 
 
 def norm(s: str) -> str:
@@ -333,10 +333,10 @@ def main() -> None:
 
     targets_norm: Dict[str, str] = {norm(k): v for k, v in WEBHOOKS_BY_AUTHOR.items()}
 
-    #today = today_jst_str()
-    target_date = yesterday_jst_str()
-    print("JST target_date =", target_date)
-    #print("JST today =", today)
+    #target_date = yesterday_jst_str()
+    #print("JST target_date =", target_date)
+    today = today_jst_str()
+    print("JST today =", today)
 
     # news と同じ：今日の記事は「複数」送る
     to_send: List[Tuple[str, Dict]] = []  # (author_key, post)
@@ -345,8 +345,8 @@ def main() -> None:
         post = parse_post(url)
 
         # 今日の記事だけ
-        #if post.get("date") != today:
-        if post.get("date") != target_date:
+        #if post.get("date") != target_date:
+        if post.get("date") != today:
             continue
 
         author_key = norm(post.get("author"))
