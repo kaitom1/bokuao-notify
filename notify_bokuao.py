@@ -54,10 +54,13 @@ WEBHOOKS_BY_AUTHOR: Dict[str, str] = {
 }
 
 
-def yestaday_jst_str() -> str:
-    #today_jst_str() -> str:
+#def today_jst_str() -> str:
+    #jst = timezone(timedelta(hours=9))
+    #return datetime.now(jst).strftime("%Y.%m.%d")
+
+def yesterday_jst_str() -> str:
     jst = timezone(timedelta(hours=9))
-    return datetime.now(jst).strftime("%Y.%m.%d")
+    return (datetime.now(jst) - timedelta(days=1)).strftime("%Y.%m.%d")
 
 
 def norm(s: str) -> str:
