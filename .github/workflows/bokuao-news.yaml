@@ -13,32 +13,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - run: pip install requests beautifulsoup4
 
-      - name: Install deps
-        run: pip install requests beautifulsoup4
-
-      # 1) restore（最新の state を拾う）
-      - name: Restore state
-        uses: actions/cache/restore@v4
+      - uses: actions/cache@v4
         with:
           path: state_news.json
-          key: bokuao-news-state-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            bokuao-news-state-${{ runner.os }}-
+          key: bokuao-news-state
 
       - name: Run news notifier
         env:
           BOKUAO_NEWS: ${{ secrets.BOKUAO_NEWS }}
         run: python bokuao_news.py
 
-      # 2) save（runごとに新しい key で保存）
-      - name: Save state
-        if: always()
-        uses: actions/cache/save@v4
+      - uses: actions/cache@v4
         with:
           path: state_news.json
-          key: bokuao-news-state-${{ runner.os }}-${{ github.run_id }}
+          key: bokuao-news-state
