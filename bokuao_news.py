@@ -11,19 +11,23 @@ from typing import List, Dict, Set, Tuple
 NEWS_LIST_URL = "https://bokuao.com/news/1/"
 STATE_FILE = "state_news.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/2.0)"
+UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/2.1)"
 
 # Discord limits
-DISCORD_CONTENT_LIMIT = 2000
 EMBED_TITLE_LIMIT = 256
 EMBED_DESC_LIMIT = 4000  # 4096未満の安全側
 
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
+
+# JPEGのみ
 ALLOWED_EXT = (".jpg", ".jpeg")
 
 NEWS_WEBHOOK_URL = os.environ["BOKUAO_NEWS"]
 NEWS_DATE_RE = re.compile(r"\b20\d{2}\.\d{2}\.\d{2}\b")
+
+# ニュースカテゴリ表記（必要なら追加）
+NEWS_CATEGORIES = {"OTHER", "NEWS", "EVENT", "MEDIA"}
 
 
 def jst_today_yyyymmdd() -> str:
@@ -79,26 +83,29 @@ def cut_at_first_marker(text: str, markers: List[str]) -> str:
     idxs = [text.find(m) for m in markers if text.find(m) != -1]
     if not idxs:
         return text.rstrip()
-    return text[:min(idxs)].rstrip()
+    return text[: min(idxs)].rstrip()
 
 
 def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
+    """
+    JPEGのみダウンロードして (filename, bytes) を返す（大きすぎるものはスキップ）
+    """
     out: List[Tuple[str, bytes]] = []
     for i, u in enumerate(urls, start=1):
         try:
             r = requests.get(u, headers={"User-Agent": UA}, timeout=30)
             r.raise_for_status()
 
+            # Content-Type が jpeg でないものは落とす（拡張子偽装対策）
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            if not ctype.startswith("image/jpeg"):
+                continue
+
             data = r.content
             if len(data) > MAX_IMAGE_BYTES:
                 continue
 
-            path = urlparse(u).path
-            ext = os.path.splitext(path)[1].lower() or ".jpg"
-            if ext not in ALLOWED_EXT:
-                ext = ".jpg"
-
-            filename = f"news_image_{i:02d}{ext}"
+            filename = f"news_image_{i:02d}.jpg"
             out.append((filename, data))
         except Exception:
             continue
@@ -150,12 +157,14 @@ def list_news_items_from_listpage() -> List[Dict]:
         category = parts[0] if parts else "（不明）"
         title = rest[len(category):].strip() if len(parts) >= 2 else rest
 
-        items.append({
-            "date": date,
-            "category": category,
-            "title": title or "（タイトル不明）",
-            "url": abs_url,
-        })
+        items.append(
+            {
+                "date": date,
+                "category": category,
+                "title": title or "（タイトル不明）",
+                "url": abs_url,
+            }
+        )
 
     # URL重複除去（順序維持）
     seen = set()
@@ -166,6 +175,59 @@ def list_news_items_from_listpage() -> List[Dict]:
         seen.add(it["url"])
         out.append(it)
     return out
+
+
+def strip_leading_header_lines(desc: str, title: str, category: str, date: str) -> str:
+    """
+    news詳細ページ本文先頭に混入する
+    「タイトル(複数回)/日付/カテゴリ」などの見出しブロックを、先頭にある限り剥がす。
+    """
+    def norm(s: str) -> str:
+        s = (s or "").strip()
+        s = re.sub(r"[ \u3000]+", "", s)
+        return s
+
+    t = norm(title)
+    c = norm(category)
+    d = norm(date)
+
+    lines = (desc or "").split("\n")
+
+    while lines:
+        head_raw = lines[0].strip()
+        head = norm(head_raw)
+
+        if not head:
+            lines.pop(0)
+            continue
+
+        # タイトル/カテゴリ/日付が先頭にある限り除去
+        if head == t or head == c or head == d:
+            lines.pop(0)
+            continue
+
+        # 日付単独行
+        if NEWS_DATE_RE.fullmatch(head_raw):
+            lines.pop(0)
+            continue
+
+        # カテゴリ行（OTHER等）
+        if head_raw in NEWS_CATEGORIES:
+            lines.pop(0)
+            continue
+
+        # ありがちな見出しノイズ
+        if head in ("NEWS", "SHARE", "BACK", "SUPPORT"):
+            lines.pop(0)
+            continue
+
+        break
+
+    # 先頭空行除去
+    while lines and not lines[0].strip():
+        lines.pop(0)
+
+    return "\n".join(lines).strip()
 
 
 def parse_news_detail(detail_url: str) -> Dict:
@@ -181,7 +243,7 @@ def parse_news_detail(detail_url: str) -> Dict:
     if container is None:
         container = soup
 
-    # 画像
+    # 画像（JPEGのみ）
     image_urls: List[str] = []
     for img in container.find_all("img"):
         src = (
@@ -193,7 +255,6 @@ def parse_news_detail(detail_url: str) -> Dict:
         if not src:
             continue
 
-        # data:image は除外
         if src.strip().lower().startswith("data:image/"):
             continue
 
@@ -206,7 +267,7 @@ def parse_news_detail(detail_url: str) -> Dict:
     text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln]
 
-    # 日付（ページ内）
+    # ページ内の日付（保険）
     date = "（不明）"
     for ln in lines[:80]:
         m = NEWS_DATE_RE.search(ln)
@@ -216,24 +277,7 @@ def parse_news_detail(detail_url: str) -> Dict:
 
     body = "\n".join(lines)
     body = cut_at_first_marker(body, ["SHARE", "BACK", "SUPPORT"])
-
-    body_lines = [ln for ln in body.split("\n") if ln]
-
-    # --- ヘッダ部分（タイトル・日付・カテゴリ）を除去 ---
-    cleaned_lines = []
-    skip = True
-    for ln in body_lines:
-        # 日付 or カテゴリ行が出るまでは捨てる
-        if skip:
-            if NEWS_DATE_RE.search(ln) or ln in ("OTHER", "NEWS", "EVENT", "MEDIA"):
-                continue
-            else:
-                # 最初の本文らしい行が出たら開始
-                skip = False
-        if not skip:
-            cleaned_lines.append(ln)
-
-    body_clean = "\n".join(cleaned_lines).strip()
+    body_clean = "\n".join([ln for ln in body.split("\n") if ln]).strip()
 
     return {
         "url": detail_url,
@@ -255,16 +299,16 @@ def post_news_item_embed_then_images(item: Dict) -> None:
     date = item.get("date") or detail.get("date") or "（不明）"
 
     embed_title = truncate(title, EMBED_TITLE_LIMIT)
-    embed_desc = truncate((detail.get("body") or "").strip(), EMBED_DESC_LIMIT)
 
+    # 本文作成 → 先頭見出しブロック削除 → 末尾にカテゴリ/日付を太字で追記
+    embed_desc = truncate((detail.get("body") or "").strip(), EMBED_DESC_LIMIT)
+    embed_desc = strip_leading_header_lines(embed_desc, title, category, date)
     embed_desc = embed_desc.rstrip() + f"\n\n**{category} / {date}**"
 
     embed = {
         "title": embed_title,
         "url": item["url"],
         "description": embed_desc,
-        # 見出し情報をEmbed内に寄せる（contentは空）
-        #"footer": {"text": f"{category} / {date}"},
     }
 
     payload1 = {
@@ -274,7 +318,6 @@ def post_news_item_embed_then_images(item: Dict) -> None:
     }
     webhook_post_json(payload1)
 
-    # レート制限回避
     time.sleep(0.9)
 
     imgs = (detail.get("images") or [])[:MAX_IMAGES_PER_POST]
@@ -316,6 +359,7 @@ def main() -> None:
         post_news_item_embed_then_images(it)
         notified.add(it["url"])
         posted += 1
+
         time.sleep(1.0)
 
     state["notified_news_urls"] = sorted(notified)
