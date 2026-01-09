@@ -17,7 +17,7 @@ UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.1)"
 DISCORD_CONTENT_LIMIT = 2000          # message content
 EMBED_TITLE_LIMIT = 256              # embed title
 EMBED_DESC_LIMIT_HARD = 4096         # Discord hard limit (embed.description)
-EMBED_DESC_LIMIT_SOFT = 4096         # あなたの運用ルール：ここを超えたら2通目へ
+EMBED_DESC_LIMIT_SOFT = 4000         # 運用ルール：ここを超えたら「2通目以降」に回す（embedは最大4000相当）
 
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
@@ -99,7 +99,7 @@ def _norm_comp(s: str) -> str:
 def strip_leading_header_lines(lines: List[str], title: str, category: str, date: str) -> List[str]:
     """
     詳細ページ本文先頭に混入する見出し（タイトル/日付/カテゴリ等）を
-    「先頭にある限り」剥がす（段落単位で扱う）。
+    「先頭にある限り」剥がす（段落単位）。
     """
     t = _norm_comp(title)
     c = _norm_comp(category)
@@ -139,7 +139,80 @@ def strip_leading_header_lines(lines: List[str], title: str, category: str, date
 
 
 def normalize_spaces(text: str) -> str:
+    # 連続空白を詰める（日本語の見た目を崩さない範囲）
     return re.sub(r"[ \u3000]+", " ", (text or "")).strip()
+
+
+def chunk_text_by_paragraph(text: str, limit: int) -> List[str]:
+    """
+    content(2000)制限対策：段落境界（空行）を優先して分割。
+    それでも単一段落が長すぎる場合は強制分割。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+    chunks: List[str] = []
+    buf = ""
+
+    def flush():
+        nonlocal buf
+        if buf:
+            chunks.append(buf)
+            buf = ""
+
+    for p in paras:
+        candidate = (buf + ("\n\n" if buf else "") + p).strip()
+        if len(candidate) <= limit:
+            buf = candidate
+            continue
+
+        # いったん確定
+        flush()
+
+        # 段落単体がlimit超なら強制分割
+        while len(p) > limit:
+            chunks.append(p[:limit])
+            p = p[limit:]
+        buf = p
+
+    flush()
+    return chunks
+
+
+def split_for_embed(body: str, embed_body_limit: int) -> Tuple[str, str]:
+    """
+    body を (embedに入れる本文, 残り) に分割。
+    なるべく段落境界で切る。最悪は文字で切る。
+    """
+    body = (body or "").strip()
+    if not body:
+        return "", ""
+
+    if len(body) <= embed_body_limit:
+        return body, ""
+
+    paras = [p.strip() for p in body.split("\n\n") if p.strip()]
+    acc: List[str] = []
+    cur = 0
+
+    for p in paras:
+        add = len(p) + (2 if acc else 0)  # "\n\n"
+        if cur + add <= embed_body_limit:
+            acc.append(p)
+            cur += add
+        else:
+            break
+
+    if acc:
+        primary = "\n\n".join(acc).strip()
+        rest = body[len(primary):].lstrip()
+        rest = rest.lstrip("\n").lstrip()
+        return primary, rest
+
+    # 1段落目から長すぎる場合
+    return body[:embed_body_limit], body[embed_body_limit:]
 
 
 # ---------- discord ----------
@@ -158,6 +231,7 @@ def webhook_post_json(payload: Dict) -> None:
             last_body = (r.text or "")[:1200]
             print(f"[WEBHOOK] status={r.status_code} attempt={attempt} body={last_body}")
 
+            # 5xxはリトライ
             if 500 <= r.status_code < 600:
                 time.sleep(2.0 * attempt)
                 continue
@@ -275,6 +349,8 @@ def list_news_items_from_listpage() -> List[Dict]:
 def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category: str, date: str) -> str:
     """
     span細切れ + get_text("\\n") で「1文字改行」になるのを避けるため、段落(p)単位で抽出。
+    - 段落内は separator="" で結合
+    - <br> は改行として残す
     """
     body_root = container.select_one("div.txt[data-delighter]") or container.select_one("div.txt") or container
 
@@ -285,12 +361,12 @@ def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category:
         for p in ps:
             for br in p.find_all("br"):
                 br.replace_with("\n")
-            s = p.get_text("", strip=True)      # 段落内は結合
+            s = p.get_text("", strip=True)
             s = normalize_spaces(s)
             if s:
                 paras.append(s)
     else:
-        # フォールバック（pが無いページ用）
+        # pが無いページ用フォールバック（取り過ぎを避けつつ拾う）
         blocks = body_root.select("div, section, article")
         for b in blocks:
             for br in b.find_all("br"):
@@ -369,33 +445,34 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
     }
 
 
-# ---------- posting (EMBED + overflow to 2nd message) ----------
-def build_embed_and_overflow(
+# ---------- posting (EMBED + overflow to 2nd message(s)) ----------
+def build_embed_and_overflow_messages(
     title: str, url: str, body: str, category: str, date: str
-) -> Tuple[Dict, str]:
+) -> Tuple[Dict, List[str]]:
     """
-    1通目：embed.description は 4000 まで（あなたのルール）
-    4000 を超えた分は 2通目（content）へ回す。
+    1通目：Embed（descriptionは最大 EMBED_DESC_LIMIT_SOFT まで）
+    4000を超えた分は「2通目以降」のcontentメッセージとして送る。
     """
     embed_title = truncate(title, EMBED_TITLE_LIMIT)
 
     footer_line = f"{category} / {date}".strip()
     body = (body or "").strip()
 
-    # embed側に必ず footer_line を入れるため、先に予約分を確保
+    # embed末尾に footer_line を入れるので、その分を先に確保
     reserve = len("\n\n") + len(footer_line) if footer_line else 0
-    limit_for_body = max(0, EMBED_DESC_LIMIT_SOFT - reserve)
+    embed_body_limit = max(0, EMBED_DESC_LIMIT_SOFT - reserve)
 
-    body_for_embed = body[:limit_for_body]
-    rest = body[len(body_for_embed):]
+    body_for_embed, rest = split_for_embed(body, embed_body_limit)
 
-    # 見栄え：embed側は本文→空行→カテゴリ/日付
+    # embed description（本文 + footer）
     if body_for_embed.strip():
-        desc = body_for_embed.rstrip() + ("\n\n" + footer_line if footer_line else "")
+        desc = body_for_embed.rstrip()
+        if footer_line:
+            desc += "\n\n" + footer_line
     else:
         desc = footer_line if footer_line else ""
 
-    # 念のためハード制限ガード
+    # 念のため hard limit に収める（4000運用でも、何かの拍子に超えるのを防ぐ）
     desc = truncate(desc, EMBED_DESC_LIMIT_HARD)
 
     embed = {
@@ -404,20 +481,23 @@ def build_embed_and_overflow(
         "description": desc,
     }
 
-    # 2通目は「続き」だけ（content 2000 制限内で省略）
-    overflow = (rest or "").lstrip()
-    if overflow:
-        overflow = "（続き）\n" + overflow
-        overflow = truncate(overflow, DISCORD_CONTENT_LIMIT)
+    overflow_msgs: List[str] = []
+    rest = (rest or "").strip()
+    if rest:
+        # 「続き」ヘッダを最初のメッセージに付ける（2000以内で）
+        chunks = chunk_text_by_paragraph(rest, DISCORD_CONTENT_LIMIT)
+        if chunks:
+            chunks[0] = truncate("（続き）\n" + chunks[0], DISCORD_CONTENT_LIMIT)
+        overflow_msgs = chunks
 
-    return embed, overflow
+    return embed, overflow_msgs
 
 
 def post_news_item_embed_then_overflow_then_images(item: Dict) -> None:
     """
-    1通目：Embed（最大4000文字相当まで）
-    2通目：溢れた本文（あれば）
-    3通目：画像（あれば）
+    1通目：Embed（最大4000相当）
+    2通目以降：溢れた本文（content、2000文字ごと）
+    最後：画像（あれば）
     """
     title = item.get("title") or "（タイトル不明）"
     category = item.get("category") or "（不明）"
@@ -429,7 +509,7 @@ def post_news_item_embed_then_overflow_then_images(item: Dict) -> None:
     final_date = (detail.get("date") or date or "（不明）").strip()
     body = (detail.get("body") or "").strip()
 
-    embed, overflow = build_embed_and_overflow(
+    embed, overflow_msgs = build_embed_and_overflow_messages(
         title=title,
         url=url,
         body=body,
@@ -443,17 +523,18 @@ def post_news_item_embed_then_overflow_then_images(item: Dict) -> None:
         "allowed_mentions": {"parse": []},
     }
     webhook_post_json(payload1)
-
     time.sleep(0.9)
 
-    if overflow:
-        payload2 = {
-            "content": overflow,
+    # 2通目以降（必要なら複数通）
+    for msg in overflow_msgs:
+        payload = {
+            "content": truncate(msg, DISCORD_CONTENT_LIMIT),
             "allowed_mentions": {"parse": []},
         }
-        webhook_post_json(payload2)
+        webhook_post_json(payload)
         time.sleep(0.9)
 
+    # images（JPEGのみ・最大10枚）
     imgs = (detail.get("images") or [])[:MAX_IMAGES_PER_POST]
     if not imgs:
         return
@@ -462,11 +543,11 @@ def post_news_item_embed_then_overflow_then_images(item: Dict) -> None:
     if not files:
         return
 
-    payload3 = {
+    payload_img = {
         "content": "",
         "allowed_mentions": {"parse": []},
     }
-    webhook_post_with_files(payload3, files)
+    webhook_post_with_files(payload_img, files)
 
 
 def main() -> None:
