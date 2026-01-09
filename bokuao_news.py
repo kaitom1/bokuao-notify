@@ -16,8 +16,8 @@ UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.2)"
 # Discord limits
 DISCORD_CONTENT_LIMIT = 2000          # message content
 EMBED_TITLE_LIMIT = 256              # embed title
-EMBED_DESC_LIMIT_HARD = 4096         # Discord hard limit (embed.description)
-EMBED_DESC_LIMIT_SOFT = 4096         # 運用ルール：ここを超えたら2通目へ
+EMBED_DESC_LIMIT_HARD = 6000         # Discord hard limit (embed.description)
+EMBED_DESC_LIMIT_SOFT = 6000         # 運用ルール：ここを超えたら2通目へ
 
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
