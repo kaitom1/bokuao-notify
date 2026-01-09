@@ -11,21 +11,21 @@ from typing import List, Dict, Set, Tuple, Optional
 NEWS_LIST_URL = "https://bokuao.com/news/1/"
 STATE_FILE = "state_news.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.0-noembed)"
+UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.0)"
 
-# Discord limits (content)
-DISCORD_CONTENT_LIMIT = 2000
+# Discord content limit
+DISCORD_CONTENT_LIMIT = 2000  # content は 2000 まで
 
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 
-# JPEGのみ
+# JPEGのみ（あなたの方針に合わせる）
 ALLOWED_EXT = (".jpg", ".jpeg")
 
 NEWS_WEBHOOK_URL = os.environ["BOKUAO_NEWS"]
 
 NEWS_DATE_RE = re.compile(r"\b20\d{2}\.\d{2}\.\d{2}\b")
-NEWS_CATEGORIES = {"OTHER", "NEWS", "EVENT", "MEDIA"}
+NEWS_CATEGORIES = {"OTHER", "NEWS", "EVENT", "MEDIA", "LIVE/EVENT"}  # 画面例に合わせて拡張
 
 
 # ---------- time ----------
@@ -63,28 +63,6 @@ def truncate(s: Optional[str], limit: int) -> str:
     return s[: max(0, limit - 1)] + "…"
 
 
-def sanitize_discord_text(s: str) -> str:
-    """
-    Discordが苦手な制御文字を除去
-    - 0x00-0x1F のうち \n \t は残す
-    - 0x7F (DEL) も除去
-    """
-    if not s:
-        return ""
-    out = []
-    for ch in s:
-        o = ord(ch)
-        if ch in ("\n", "\t"):
-            out.append(ch)
-            continue
-        if o == 0x7F:
-            continue
-        if 0 <= o < 0x20:
-            continue
-        out.append(ch)
-    return "".join(out)
-
-
 def is_image_url(url: str) -> bool:
     p = urlparse(url)
     path = (p.path or "").lower()
@@ -110,109 +88,68 @@ def cut_at_first_marker(text: str, markers: List[str]) -> str:
 
 
 def _norm_comp(s: str) -> str:
-    # 比較用：空白除去
     s = (s or "").strip()
     s = re.sub(r"[ \u3000]+", "", s)
     return s
 
 
-def strip_leading_header_lines(desc: str, title: str, category: str, date: str) -> str:
+def strip_leading_header_lines(lines: List[str], title: str, category: str, date: str) -> List[str]:
     """
-    news詳細ページ本文先頭に混入する見出しブロック（タイトル/日付/カテゴリ等）を、
-    先頭にある限り剥がす。
+    詳細ページ本文先頭に混入する見出し（タイトル/日付/カテゴリ等）を、
+    「先頭にある限り」剥がす（段落単位で扱う）。
     """
     t = _norm_comp(title)
     c = _norm_comp(category)
     d = _norm_comp(date)
 
-    lines = (desc or "").split("\n")
-
-    while lines:
-        head_raw = lines[0].strip()
+    out = lines[:]
+    while out:
+        head_raw = (out[0] or "").strip()
         head = _norm_comp(head_raw)
 
         if not head:
-            lines.pop(0)
+            out.pop(0)
             continue
 
         # タイトル/カテゴリ/日付（完全一致）は除去
         if head == t or head == c or head == d:
-            lines.pop(0)
+            out.pop(0)
             continue
 
         # 日付単独行
         if NEWS_DATE_RE.fullmatch(head_raw):
-            lines.pop(0)
+            out.pop(0)
             continue
 
         # カテゴリ単独行（OTHER 等）
         if head_raw in NEWS_CATEGORIES:
-            lines.pop(0)
+            out.pop(0)
             continue
 
         # ありがちなノイズ
         if head in ("NEWS", "SHARE", "BACK", "SUPPORT"):
-            lines.pop(0)
+            out.pop(0)
             continue
 
         break
 
     # 先頭空行除去
-    while lines and not lines[0].strip():
-        lines.pop(0)
+    while out and not (out[0] or "").strip():
+        out.pop(0)
 
-    return "\n".join(lines).strip()
+    return out
 
 
-def normalize_newlines_jp(text: str) -> str:
-    """
-    不自然な「1文字ずつ改行」や短すぎる行の連続を、ある程度結合して読みやすくする。
-    - 1〜2文字程度の行が続く場合は同一段落として結合
-    - 空行は段落として維持（過剰は圧縮）
-    """
-    lines = [ln.rstrip() for ln in (text or "").split("\n")]
-    out: List[str] = []
-    buf: List[str] = []
-
-    def flush_buf():
-        if not buf:
-            return
-        out.append("".join(buf).strip())
-        buf.clear()
-
-    for ln in lines:
-        s = ln.strip()
-        if not s:
-            flush_buf()
-            out.append("")
-            continue
-
-        if len(s) <= 2:
-            buf.append(s)
-            continue
-
-        flush_buf()
-        out.append(s)
-
-    flush_buf()
-
-    # 空行圧縮（3連続以上→2連続）
-    compact: List[str] = []
-    empty_run = 0
-    for ln in out:
-        if ln == "":
-            empty_run += 1
-            if empty_run <= 2:
-                compact.append("")
-        else:
-            empty_run = 0
-            compact.append(ln)
-
-    return "\n".join(compact).strip()
+def normalize_spaces(text: str) -> str:
+    # 必要最低限：連続空白を詰める（日本語の見た目を崩さない程度）
+    return re.sub(r"[ \u3000]+", " ", (text or "")).strip()
 
 
 # ---------- discord ----------
 def webhook_post_json(payload: Dict) -> None:
+    """
+    Discord側が一時的に不調（5xx）でも落ちにくくする。
+    """
     last_status = None
     last_body = None
 
@@ -227,7 +164,6 @@ def webhook_post_json(payload: Dict) -> None:
             last_body = (r.text or "")[:1200]
             print(f"[WEBHOOK] status={r.status_code} attempt={attempt} body={last_body}")
 
-            # 5xxはリトライ
             if 500 <= r.status_code < 600:
                 time.sleep(2.0 * attempt)
                 continue
@@ -349,7 +285,38 @@ def list_news_items_from_listpage() -> List[Dict]:
     return out
 
 
-def parse_news_detail(detail_url: str) -> Dict:
+def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category: str, date: str) -> str:
+    """
+    改行が不自然になる根本原因（span細切れ + get_text("\\n")）を回避するため、
+    「段落(p)」単位で抽出する。
+
+    - 段落内は span 分割されていても結合（separator=""）
+    - <br> は改行として残すため、先に "\\n" に置換
+    - 先頭の見出しブロック（タイトル/日付/カテゴリ）を段落単位で除去
+    """
+    body_root = container.select_one("div.txt[data-delighter]") or container
+
+    paras: List[str] = []
+    for p in body_root.select("p"):
+        # br を改行として残す
+        for br in p.find_all("br"):
+            br.replace_with("\n")
+
+        # 段落内は結合（ここが重要）
+        s = p.get_text("", strip=True)
+        s = normalize_spaces(s)
+
+        if s:
+            paras.append(s)
+
+    # 先頭見出し除去（段落単位）
+    paras = strip_leading_header_lines(paras, title, category, date)
+
+    # 段落区切りは空行（Discordで読みやすい）
+    return "\n\n".join(paras).strip()
+
+
+def parse_news_detail(detail_url: str, title: str, category: str, list_date: str) -> Dict:
     html = fetch(detail_url)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -382,21 +349,23 @@ def parse_news_detail(detail_url: str) -> Dict:
             image_urls.append(abs_src)
     image_urls = uniq_keep_order(image_urls)
 
-    # テキスト（行として抜く）
-    text = container.get_text("\n", strip=True)
-    lines = [ln for ln in text.split("\n") if ln.strip()]
-
     # ページ内の日付（保険）
-    date = "（不明）"
-    for ln in lines[:120]:
+    page_date = "（不明）"
+    raw_text = container.get_text("\n", strip=True)
+    for ln in (raw_text.split("\n")[:200]):
         m = NEWS_DATE_RE.search(ln)
         if m:
-            date = m.group(0)
+            page_date = m.group(0)
             break
 
-    body = "\n".join(lines)
+    # 本文（段落ベース）
+    body = extract_news_body_paragraphs(container, title=title, category=category, date=list_date)
+
+    # 末尾ノイズを軽くカット（必要なら）
     body = cut_at_first_marker(body, ["SHARE", "BACK", "SUPPORT"])
-    body = "\n".join([ln for ln in body.split("\n") if ln.strip()]).strip()
+
+    # 日付は一覧優先、なければページ内
+    date = list_date or page_date
 
     return {
         "url": detail_url,
@@ -407,54 +376,43 @@ def parse_news_detail(detail_url: str) -> Dict:
 
 
 # ---------- posting (NO EMBED) ----------
-def build_content_message(detail_body: str, title: str, url: str, category: str, date: str) -> str:
+def build_content_text(title: str, url: str, body: str, category: str, date: str) -> str:
     """
-    Embedを使わない通常メッセージ(content)を組み立てる
-    - 先頭の見出し混入を除去
-    - 1文字改行を緩和
-    - 末尾に category/date を追記
-    - 2000文字に収める
+    embedなし：content で送る
+    - 1行目：太字 + リンク
+    - 本文
+    - 最後に「category / date」
     """
-    body = (detail_body or "").strip()
-
-    # 先頭見出し除去（タイトル/カテゴリ/日付など）
-    body = strip_leading_header_lines(body, title, category, date)
-
-    # 改行整形（1文字ずつ改行を抑制）
-    body = normalize_newlines_jp(body)
-
+    header = f"**[{title}]({url})**"
     footer = f"{category} / {date}"
 
-    header = f"**[{title}]({url})**\n"
-
+    parts = [header]
     if body:
-        content = header + "\n" + body + "\n\n" + footer
-    else:
-        content = header + "\n" + footer
+        parts.append(body)
+    parts.append(footer)
 
-    # 制御文字除去 → 2000に丸める
-    content = sanitize_discord_text(content)
-    content = truncate(content, DISCORD_CONTENT_LIMIT)
-    return content
+    content = "\n\n".join(parts).strip()
+    return truncate(content, DISCORD_CONTENT_LIMIT)
 
 
 def post_news_item_text_then_images(item: Dict) -> None:
     """
-    1通目：通常メッセージ(content)で本文＋タイトルリンク（Embedなし）
+    1通目：content（embedなし）
     2通目：画像だけ添付（最大10枚）
     """
-    detail = parse_news_detail(item["url"])
-
     title = item.get("title") or "（タイトル不明）"
     category = item.get("category") or "（不明）"
-    date = item.get("date") or detail.get("date") or "（不明）"
+    date = item.get("date") or "（不明）"
+    url = item["url"]
 
-    content = build_content_message(
-        detail_body=detail.get("body") or "",
+    detail = parse_news_detail(url, title=title, category=category, list_date=date)
+
+    content = build_content_text(
         title=title,
-        url=item["url"],
+        url=url,
+        body=(detail.get("body") or "").strip(),
         category=category,
-        date=date,
+        date=(detail.get("date") or date),
     )
 
     payload1 = {
