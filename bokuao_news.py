@@ -19,13 +19,13 @@ DISCORD_CONTENT_LIMIT = 2000  # content は 2000 まで
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 
-# JPEGのみ（あなたの方針に合わせる）
+# JPEGのみ（方針に合わせる）
 ALLOWED_EXT = (".jpg", ".jpeg")
 
 NEWS_WEBHOOK_URL = os.environ["BOKUAO_NEWS"]
 
 NEWS_DATE_RE = re.compile(r"\b20\d{2}\.\d{2}\.\d{2}\b")
-NEWS_CATEGORIES = {"OTHER", "NEWS", "EVENT", "MEDIA", "LIVE/EVENT"}  # 画面例に合わせて拡張
+NEWS_CATEGORIES = {"OTHER", "NEWS", "EVENT", "MEDIA", "LIVE/EVENT"}  # 必要なら追加
 
 
 # ---------- time ----------
@@ -95,7 +95,7 @@ def _norm_comp(s: str) -> str:
 
 def strip_leading_header_lines(lines: List[str], title: str, category: str, date: str) -> List[str]:
     """
-    詳細ページ本文先頭に混入する見出し（タイトル/日付/カテゴリ等）を、
+    詳細ページ本文先頭に混入する見出し（タイトル/日付/カテゴリ等）を
     「先頭にある限り」剥がす（段落単位で扱う）。
     """
     t = _norm_comp(title)
@@ -141,7 +141,7 @@ def strip_leading_header_lines(lines: List[str], title: str, category: str, date
 
 
 def normalize_spaces(text: str) -> str:
-    # 必要最低限：連続空白を詰める（日本語の見た目を崩さない程度）
+    # 連続空白を詰める（日本語の見た目を崩さない範囲）
     return re.sub(r"[ \u3000]+", " ", (text or "")).strip()
 
 
@@ -294,20 +294,47 @@ def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category:
     - <br> は改行として残すため、先に "\\n" に置換
     - 先頭の見出しブロック（タイトル/日付/カテゴリ）を段落単位で除去
     """
-    body_root = container.select_one("div.txt[data-delighter]") or container
+    # 本文が入っていそうなブロックを優先（なければ container 全体）
+    body_root = container.select_one("div.txt[data-delighter]") or container.select_one("div.txt") or container
 
     paras: List[str] = []
-    for p in body_root.select("p"):
-        # br を改行として残す
-        for br in p.find_all("br"):
-            br.replace_with("\n")
 
-        # 段落内は結合（ここが重要）
-        s = p.get_text("", strip=True)
-        s = normalize_spaces(s)
+    # pが取れるならp優先
+    ps = body_root.select("p")
+    if ps:
+        for p in ps:
+            # br を改行として残す
+            for br in p.find_all("br"):
+                br.replace_with("\n")
 
-        if s:
-            paras.append(s)
+            # 段落内は結合（ここが重要）
+            s = p.get_text("", strip=True)
+            s = normalize_spaces(s)
+            if s:
+                paras.append(s)
+    else:
+        # pがないページ用のフォールバック（div等から段落っぽく拾う）
+        # ただし get_text("\n") だと崩れやすいので、短いブロックだけ拾う
+        blocks = body_root.select("div, section, article")
+        for b in blocks:
+            # brは残す
+            for br in b.find_all("br"):
+                br.replace_with("\n")
+            s = b.get_text("", strip=True)
+            s = normalize_spaces(s)
+            if s and len(s) >= 10:
+                paras.append(s)
+
+        # 重複が出ることがあるので軽く重複排除
+        dedup: List[str] = []
+        seen = set()
+        for x in paras:
+            k = _norm_comp(x)
+            if k in seen:
+                continue
+            seen.add(k)
+            dedup.append(x)
+        paras = dedup
 
     # 先頭見出し除去（段落単位）
     paras = strip_leading_header_lines(paras, title, category, date)
@@ -350,7 +377,7 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
     image_urls = uniq_keep_order(image_urls)
 
     # ページ内の日付（保険）
-    page_date = "（不明）"
+    page_date = ""
     raw_text = container.get_text("\n", strip=True)
     for ln in (raw_text.split("\n")[:200]):
         m = NEWS_DATE_RE.search(ln)
@@ -359,13 +386,13 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
             break
 
     # 本文（段落ベース）
-    body = extract_news_body_paragraphs(container, title=title, category=category, date=list_date)
+    body = extract_news_body_paragraphs(container, title=title, category=category, date=list_date or page_date)
 
     # 末尾ノイズを軽くカット（必要なら）
     body = cut_at_first_marker(body, ["SHARE", "BACK", "SUPPORT"])
 
     # 日付は一覧優先、なければページ内
-    date = list_date or page_date
+    date = list_date or page_date or "（不明）"
 
     return {
         "url": detail_url,
@@ -402,7 +429,7 @@ def post_news_item_text_then_images(item: Dict) -> None:
     """
     title = item.get("title") or "（タイトル不明）"
     category = item.get("category") or "（不明）"
-    date = item.get("date") or "（不明）"
+    date = item.get("date") or ""
     url = item["url"]
 
     detail = parse_news_detail(url, title=title, category=category, list_date=date)
@@ -412,7 +439,7 @@ def post_news_item_text_then_images(item: Dict) -> None:
         url=url,
         body=(detail.get("body") or "").strip(),
         category=category,
-        date=(detail.get("date") or date),
+        date=(detail.get("date") or date or "（不明）"),
     )
 
     payload1 = {
