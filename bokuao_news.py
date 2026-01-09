@@ -23,7 +23,7 @@ MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 
 # JPEGのみ
-ALLOWED_EXT = (".jpg", ".jpeg")
+ALLOWED_EXT = (".jpg", ".jpeg", ".png")
 
 NEWS_WEBHOOK_URL = os.environ["BOKUAO_NEWS"]
 
