@@ -420,7 +420,7 @@ def build_embed_and_overflow(
     body_for_embed, rest = split_prefer_newline(body, limit_for_body)
 
     if body_for_embed.strip():
-        desc = body_for_embed.rstrip() + ("\n" + footer_line if footer_line else "")
+        desc = body_for_embed.rstrip() + ("\n\n" + footer_line if footer_line else "")
     else:
         desc = footer_line if footer_line else ""
 
