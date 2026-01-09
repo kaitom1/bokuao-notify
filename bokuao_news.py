@@ -6,16 +6,17 @@ import datetime as dt
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, Optional
 
 NEWS_LIST_URL = "https://bokuao.com/news/1/"
 STATE_FILE = "state_news.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/2.1)"
+UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/2.2)"
 
-# Discord limits
+# Discord embed limits
 EMBED_TITLE_LIMIT = 256
-EMBED_DESC_LIMIT = 4000  # 4096未満の安全側
+EMBED_DESC_LIMIT_SAFE = 4000  # 末尾追記などを考慮した安全側
+EMBED_DESC_LIMIT_HARD = 4096  # 最終ガード
 
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
@@ -24,18 +25,19 @@ MAX_IMAGE_BYTES = 7 * 1024 * 1024
 ALLOWED_EXT = (".jpg", ".jpeg")
 
 NEWS_WEBHOOK_URL = os.environ["BOKUAO_NEWS"]
-NEWS_DATE_RE = re.compile(r"\b20\d{2}\.\d{2}\.\d{2}\b")
 
-# ニュースカテゴリ表記（必要なら追加）
+NEWS_DATE_RE = re.compile(r"\b20\d{2}\.\d{2}\.\d{2}\b")
 NEWS_CATEGORIES = {"OTHER", "NEWS", "EVENT", "MEDIA"}
 
 
+# ---------- time ----------
 def jst_today_yyyymmdd() -> str:
     jst = dt.timezone(dt.timedelta(hours=9))
     now = dt.datetime.now(tz=jst)
     return now.strftime("%Y.%m.%d")
 
 
+# ---------- io ----------
 def fetch(url: str) -> str:
     r = requests.get(url, headers={"User-Agent": UA}, timeout=30)
     r.raise_for_status()
@@ -54,8 +56,9 @@ def save_state(state: Dict) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def truncate(s: str, limit: int) -> str:
-    if s is None:
+# ---------- helpers ----------
+def truncate(s: Optional[str], limit: int) -> str:
+    if not s:
         return ""
     if len(s) <= limit:
         return s
@@ -86,6 +89,177 @@ def cut_at_first_marker(text: str, markers: List[str]) -> str:
     return text[: min(idxs)].rstrip()
 
 
+def _norm_comp(s: str) -> str:
+    # 比較用：空白除去
+    s = (s or "").strip()
+    s = re.sub(r"[ \u3000]+", "", s)
+    return s
+
+
+def strip_leading_header_lines(desc: str, title: str, category: str, date: str) -> str:
+    """
+    news詳細ページ本文先頭に混入する見出しブロック（タイトル/日付/カテゴリ等）を、
+    先頭にある限り剥がす。
+    """
+    t = _norm_comp(title)
+    c = _norm_comp(category)
+    d = _norm_comp(date)
+
+    lines = (desc or "").split("\n")
+
+    while lines:
+        head_raw = lines[0].strip()
+        head = _norm_comp(head_raw)
+
+        if not head:
+            lines.pop(0)
+            continue
+
+        # タイトル/カテゴリ/日付（完全一致）は除去
+        if head == t or head == c or head == d:
+            lines.pop(0)
+            continue
+
+        # 日付単独行
+        if NEWS_DATE_RE.fullmatch(head_raw):
+            lines.pop(0)
+            continue
+
+        # カテゴリ単独行（OTHER 等）
+        if head_raw in NEWS_CATEGORIES:
+            lines.pop(0)
+            continue
+
+        # ありがちなノイズ
+        if head in ("NEWS", "SHARE", "BACK", "SUPPORT"):
+            lines.pop(0)
+            continue
+
+        break
+
+    # 先頭空行除去
+    while lines and not lines[0].strip():
+        lines.pop(0)
+
+    return "\n".join(lines).strip()
+
+
+def normalize_newlines_jp(text: str) -> str:
+    """
+    不自然な「1文字ずつ改行」や短すぎる行の連続を、ある程度結合して読みやすくする。
+    - 1〜2文字程度の行が続く場合は同一段落として結合
+    - ただし記号だけの行や見出しっぽいものは極力温存
+    """
+    lines = [ln.rstrip() for ln in (text or "").split("\n")]
+    out: List[str] = []
+    buf: List[str] = []
+
+    def flush_buf():
+        if not buf:
+            return
+        # バッファは結合（空白なしで連結）
+        out.append("".join(buf).strip())
+        buf.clear()
+
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            flush_buf()
+            out.append("")  # 段落区切り
+            continue
+
+        # 行が極端に短い（1〜2文字）ならバッファへ
+        if len(s) <= 2:
+            buf.append(s)
+            continue
+
+        # バッファが溜まっていて、今の行が普通の長さなら先に吐く
+        flush_buf()
+        out.append(s)
+
+    flush_buf()
+
+    # 余分な空行圧縮（3連続以上→2連続）
+    compact: List[str] = []
+    empty_run = 0
+    for ln in out:
+        if ln == "":
+            empty_run += 1
+            if empty_run <= 2:
+                compact.append("")
+        else:
+            empty_run = 0
+            compact.append(ln)
+
+    return "\n".join(compact).strip()
+
+
+# ---------- discord ----------
+def webhook_post_json(payload: Dict) -> None:
+    last_status = None
+    last_body = None
+
+    for attempt in range(1, 6):
+        try:
+            r = requests.post(NEWS_WEBHOOK_URL, json=payload, timeout=30)
+
+            if 200 <= r.status_code < 300:
+                return
+
+            last_status = r.status_code
+            last_body = (r.text or "")[:1200]
+            print(f"[WEBHOOK] status={r.status_code} attempt={attempt} body={last_body}")
+
+            # 5xxはリトライ、他は即raise
+            if 500 <= r.status_code < 600:
+                time.sleep(2.0 * attempt)
+                continue
+
+            r.raise_for_status()
+
+        except requests.RequestException as e:
+            print(f"[WEBHOOK] exception attempt={attempt}: {e}")
+            time.sleep(2.0 * attempt)
+
+    raise RuntimeError(f"Discord webhook failed after retries: status={last_status} body={last_body}")
+
+
+def webhook_post_with_files(payload: Dict, files: List[Tuple[str, bytes]]) -> None:
+    last_status = None
+    last_body = None
+
+    for attempt in range(1, 6):
+        try:
+            multipart = {f"files[{idx}]": (fname, data) for idx, (fname, data) in enumerate(files)}
+
+            r = requests.post(
+                NEWS_WEBHOOK_URL,
+                data={"payload_json": json.dumps(payload, ensure_ascii=False)},
+                files=multipart,
+                timeout=60,
+            )
+
+            if 200 <= r.status_code < 300:
+                return
+
+            last_status = r.status_code
+            last_body = (r.text or "")[:1200]
+            print(f"[WEBHOOK] status={r.status_code} attempt={attempt} body={last_body}")
+
+            if 500 <= r.status_code < 600:
+                time.sleep(2.0 * attempt)
+                continue
+
+            r.raise_for_status()
+
+        except requests.RequestException as e:
+            print(f"[WEBHOOK] exception attempt={attempt}: {e}")
+            time.sleep(2.0 * attempt)
+
+    raise RuntimeError(f"Discord webhook(files) failed after retries: status={last_status} body={last_body}")
+
+
+# ---------- scraping ----------
 def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
     """
     JPEGのみダウンロードして (filename, bytes) を返す（大きすぎるものはスキップ）
@@ -96,7 +270,6 @@ def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
             r = requests.get(u, headers={"User-Agent": UA}, timeout=30)
             r.raise_for_status()
 
-            # Content-Type が jpeg でないものは落とす（拡張子偽装対策）
             ctype = (r.headers.get("Content-Type") or "").lower()
             if not ctype.startswith("image/jpeg"):
                 continue
@@ -110,25 +283,6 @@ def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
         except Exception:
             continue
     return out
-
-
-def webhook_post_json(payload: Dict) -> None:
-    r = requests.post(NEWS_WEBHOOK_URL, json=payload, timeout=30)
-    r.raise_for_status()
-
-
-def webhook_post_with_files(payload: Dict, files: List[Tuple[str, bytes]]) -> None:
-    multipart = {}
-    for idx, (fname, data) in enumerate(files):
-        multipart[f"files[{idx}]"] = (fname, data)
-
-    r = requests.post(
-        NEWS_WEBHOOK_URL,
-        data={"payload_json": json.dumps(payload, ensure_ascii=False)},
-        files=multipart,
-        timeout=60,
-    )
-    r.raise_for_status()
 
 
 def list_news_items_from_listpage() -> List[Dict]:
@@ -168,66 +322,14 @@ def list_news_items_from_listpage() -> List[Dict]:
 
     # URL重複除去（順序維持）
     seen = set()
-    out = []
+    out: List[Dict] = []
     for it in items:
         if it["url"] in seen:
             continue
         seen.add(it["url"])
         out.append(it)
+
     return out
-
-
-def strip_leading_header_lines(desc: str, title: str, category: str, date: str) -> str:
-    """
-    news詳細ページ本文先頭に混入する
-    「タイトル(複数回)/日付/カテゴリ」などの見出しブロックを、先頭にある限り剥がす。
-    """
-    def norm(s: str) -> str:
-        s = (s or "").strip()
-        s = re.sub(r"[ \u3000]+", "", s)
-        return s
-
-    t = norm(title)
-    c = norm(category)
-    d = norm(date)
-
-    lines = (desc or "").split("\n")
-
-    while lines:
-        head_raw = lines[0].strip()
-        head = norm(head_raw)
-
-        if not head:
-            lines.pop(0)
-            continue
-
-        # タイトル/カテゴリ/日付が先頭にある限り除去
-        if head == t or head == c or head == d:
-            lines.pop(0)
-            continue
-
-        # 日付単独行
-        if NEWS_DATE_RE.fullmatch(head_raw):
-            lines.pop(0)
-            continue
-
-        # カテゴリ行（OTHER等）
-        if head_raw in NEWS_CATEGORIES:
-            lines.pop(0)
-            continue
-
-        # ありがちな見出しノイズ
-        if head in ("NEWS", "SHARE", "BACK", "SUPPORT"):
-            lines.pop(0)
-            continue
-
-        break
-
-    # 先頭空行除去
-    while lines and not lines[0].strip():
-        lines.pop(0)
-
-    return "\n".join(lines).strip()
 
 
 def parse_news_detail(detail_url: str) -> Dict:
@@ -263,13 +365,13 @@ def parse_news_detail(detail_url: str) -> Dict:
             image_urls.append(abs_src)
     image_urls = uniq_keep_order(image_urls)
 
-    # テキスト
+    # テキスト（いったん行で抜く）
     text = container.get_text("\n", strip=True)
-    lines = [ln for ln in text.split("\n") if ln]
+    lines = [ln for ln in text.split("\n") if ln.strip()]
 
     # ページ内の日付（保険）
     date = "（不明）"
-    for ln in lines[:80]:
+    for ln in lines[:120]:
         m = NEWS_DATE_RE.search(ln)
         if m:
             date = m.group(0)
@@ -277,14 +379,36 @@ def parse_news_detail(detail_url: str) -> Dict:
 
     body = "\n".join(lines)
     body = cut_at_first_marker(body, ["SHARE", "BACK", "SUPPORT"])
-    body_clean = "\n".join([ln for ln in body.split("\n") if ln]).strip()
+    body = "\n".join([ln for ln in body.split("\n") if ln.strip()]).strip()
 
     return {
         "url": detail_url,
         "date": date,
-        "body": body_clean,
+        "body": body,
         "images": image_urls,
     }
+
+
+# ---------- posting ----------
+def build_embed_description(detail_body: str, title: str, category: str, date: str) -> str:
+    # まず安全側でtruncate（ここで余裕を確保）
+    desc = truncate((detail_body or "").strip(), EMBED_DESC_LIMIT_SAFE)
+
+    # 先頭見出し除去
+    desc = strip_leading_header_lines(desc, title, category, date)
+
+    # 改行整形（1文字改行抑制）
+    desc = normalize_newlines_jp(desc)
+
+    # 末尾にカテゴリ/日付を追記（太字なし）
+    if desc:
+        desc = desc.rstrip() + f"\n\n{category} / {date}"
+    else:
+        desc = f"{category} / {date}"
+
+    # 最終ガード：必ず4096以内
+    desc = truncate(desc, EMBED_DESC_LIMIT_HARD)
+    return desc
 
 
 def post_news_item_embed_then_images(item: Dict) -> None:
@@ -299,11 +423,7 @@ def post_news_item_embed_then_images(item: Dict) -> None:
     date = item.get("date") or detail.get("date") or "（不明）"
 
     embed_title = truncate(title, EMBED_TITLE_LIMIT)
-
-    # 本文作成 → 先頭見出しブロック削除 → 末尾にカテゴリ/日付を太字で追記
-    embed_desc = truncate((detail.get("body") or "").strip(), EMBED_DESC_LIMIT)
-    embed_desc = strip_leading_header_lines(embed_desc, title, category, date)
-    embed_desc = embed_desc.rstrip() + f"\n\n{category} / {date}"
+    embed_desc = build_embed_description(detail.get("body") or "", title, category, date)
 
     embed = {
         "title": embed_title,
