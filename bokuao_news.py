@@ -11,12 +11,10 @@ from typing import List, Dict, Set, Tuple, Optional
 NEWS_LIST_URL = "https://bokuao.com/news/1/"
 STATE_FILE = "state_news.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/2.2)"
+UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.0-noembed)"
 
-# Discord embed limits
-EMBED_TITLE_LIMIT = 256
-EMBED_DESC_LIMIT_SAFE = 4000  # 末尾追記などを考慮した安全側
-EMBED_DESC_LIMIT_HARD = 4096  # 最終ガード
+# Discord limits (content)
+DISCORD_CONTENT_LIMIT = 2000
 
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
@@ -63,6 +61,28 @@ def truncate(s: Optional[str], limit: int) -> str:
     if len(s) <= limit:
         return s
     return s[: max(0, limit - 1)] + "…"
+
+
+def sanitize_discord_text(s: str) -> str:
+    """
+    Discordが苦手な制御文字を除去
+    - 0x00-0x1F のうち \n \t は残す
+    - 0x7F (DEL) も除去
+    """
+    if not s:
+        return ""
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if ch in ("\n", "\t"):
+            out.append(ch)
+            continue
+        if o == 0x7F:
+            continue
+        if 0 <= o < 0x20:
+            continue
+        out.append(ch)
+    return "".join(out)
 
 
 def is_image_url(url: str) -> bool:
@@ -148,7 +168,7 @@ def normalize_newlines_jp(text: str) -> str:
     """
     不自然な「1文字ずつ改行」や短すぎる行の連続を、ある程度結合して読みやすくする。
     - 1〜2文字程度の行が続く場合は同一段落として結合
-    - ただし記号だけの行や見出しっぽいものは極力温存
+    - 空行は段落として維持（過剰は圧縮）
     """
     lines = [ln.rstrip() for ln in (text or "").split("\n")]
     out: List[str] = []
@@ -157,7 +177,6 @@ def normalize_newlines_jp(text: str) -> str:
     def flush_buf():
         if not buf:
             return
-        # バッファは結合（空白なしで連結）
         out.append("".join(buf).strip())
         buf.clear()
 
@@ -165,21 +184,19 @@ def normalize_newlines_jp(text: str) -> str:
         s = ln.strip()
         if not s:
             flush_buf()
-            out.append("")  # 段落区切り
+            out.append("")
             continue
 
-        # 行が極端に短い（1〜2文字）ならバッファへ
         if len(s) <= 2:
             buf.append(s)
             continue
 
-        # バッファが溜まっていて、今の行が普通の長さなら先に吐く
         flush_buf()
         out.append(s)
 
     flush_buf()
 
-    # 余分な空行圧縮（3連続以上→2連続）
+    # 空行圧縮（3連続以上→2連続）
     compact: List[str] = []
     empty_run = 0
     for ln in out:
@@ -210,7 +227,7 @@ def webhook_post_json(payload: Dict) -> None:
             last_body = (r.text or "")[:1200]
             print(f"[WEBHOOK] status={r.status_code} attempt={attempt} body={last_body}")
 
-            # 5xxはリトライ、他は即raise
+            # 5xxはリトライ
             if 500 <= r.status_code < 600:
                 time.sleep(2.0 * attempt)
                 continue
@@ -365,7 +382,7 @@ def parse_news_detail(detail_url: str) -> Dict:
             image_urls.append(abs_src)
     image_urls = uniq_keep_order(image_urls)
 
-    # テキスト（いったん行で抜く）
+    # テキスト（行として抜く）
     text = container.get_text("\n", strip=True)
     lines = [ln for ln in text.split("\n") if ln.strip()]
 
@@ -389,31 +406,41 @@ def parse_news_detail(detail_url: str) -> Dict:
     }
 
 
-# ---------- posting ----------
-def build_embed_description(detail_body: str, title: str, category: str, date: str) -> str:
-    # まず安全側でtruncate（ここで余裕を確保）
-    desc = truncate((detail_body or "").strip(), EMBED_DESC_LIMIT_SAFE)
-
-    # 先頭見出し除去
-    desc = strip_leading_header_lines(desc, title, category, date)
-
-    # 改行整形（1文字改行抑制）
-    desc = normalize_newlines_jp(desc)
-
-    # 末尾にカテゴリ/日付を追記（太字なし）
-    if desc:
-        desc = desc.rstrip() + f"\n\n{category} / {date}"
-    else:
-        desc = f"{category} / {date}"
-
-    # 最終ガード：必ず4096以内
-    desc = truncate(desc, EMBED_DESC_LIMIT_HARD)
-    return desc
-
-
-def post_news_item_embed_then_images(item: Dict) -> None:
+# ---------- posting (NO EMBED) ----------
+def build_content_message(detail_body: str, title: str, url: str, category: str, date: str) -> str:
     """
-    1通目：Embed（title/url/description）
+    Embedを使わない通常メッセージ(content)を組み立てる
+    - 先頭の見出し混入を除去
+    - 1文字改行を緩和
+    - 末尾に category/date を追記
+    - 2000文字に収める
+    """
+    body = (detail_body or "").strip()
+
+    # 先頭見出し除去（タイトル/カテゴリ/日付など）
+    body = strip_leading_header_lines(body, title, category, date)
+
+    # 改行整形（1文字ずつ改行を抑制）
+    body = normalize_newlines_jp(body)
+
+    footer = f"{category} / {date}"
+
+    header = f"**[{title}]({url})**\n"
+
+    if body:
+        content = header + "\n" + body + "\n\n" + footer
+    else:
+        content = header + "\n" + footer
+
+    # 制御文字除去 → 2000に丸める
+    content = sanitize_discord_text(content)
+    content = truncate(content, DISCORD_CONTENT_LIMIT)
+    return content
+
+
+def post_news_item_text_then_images(item: Dict) -> None:
+    """
+    1通目：通常メッセージ(content)で本文＋タイトルリンク（Embedなし）
     2通目：画像だけ添付（最大10枚）
     """
     detail = parse_news_detail(item["url"])
@@ -422,18 +449,16 @@ def post_news_item_embed_then_images(item: Dict) -> None:
     category = item.get("category") or "（不明）"
     date = item.get("date") or detail.get("date") or "（不明）"
 
-    embed_title = truncate(title, EMBED_TITLE_LIMIT)
-    embed_desc = build_embed_description(detail.get("body") or "", title, category, date)
-
-    embed = {
-        "title": embed_title,
-        "url": item["url"],
-        "description": embed_desc,
-    }
+    content = build_content_message(
+        detail_body=detail.get("body") or "",
+        title=title,
+        url=item["url"],
+        category=category,
+        date=date,
+    )
 
     payload1 = {
-        "content": "",
-        "embeds": [embed],
+        "content": content,
         "allowed_mentions": {"parse": []},
     }
     webhook_post_json(payload1)
@@ -476,7 +501,7 @@ def main() -> None:
             skipped += 1
             continue
 
-        post_news_item_embed_then_images(it)
+        post_news_item_text_then_images(it)
         notified.add(it["url"])
         posted += 1
 
