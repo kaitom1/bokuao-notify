@@ -11,7 +11,7 @@ from typing import List, Dict, Set, Tuple, Optional
 NEWS_LIST_URL = "https://bokuao.com/news/1/"
 STATE_FILE = "state_news.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.1)"
+UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.2)"
 
 # Discord limits
 DISCORD_CONTENT_LIMIT = 2000          # message content
@@ -32,10 +32,17 @@ NEWS_CATEGORIES = {"OTHER", "NEWS", "EVENT", "MEDIA", "LIVE/EVENT"}  # 必要な
 
 
 # ---------- time ----------
-def jst_today_yyyymmdd() -> str:
+def jst_target_yyyymmdd(cutoff_hour: int = 6) -> str:
+    """
+    JSTで、cutoff_hour(既定6時)より前は「昨日」、それ以降は「今日」を返す。
+    """
     jst = dt.timezone(dt.timedelta(hours=9))
     now = dt.datetime.now(tz=jst)
-    return now.strftime("%Y.%m.%d")
+    if now.hour < cutoff_hour:
+        target = (now.date() - dt.timedelta(days=1))
+    else:
+        target = now.date()
+    return target.strftime("%Y.%m.%d")
 
 
 # ---------- io ----------
@@ -99,7 +106,7 @@ def _norm_comp(s: str) -> str:
 def strip_leading_header_lines(lines: List[str], title: str, category: str, date: str) -> List[str]:
     """
     詳細ページ本文先頭に混入する見出し（タイトル/日付/カテゴリ等）を
-    「先頭にある限り」剥がす（段落単位で扱う）。
+    「先頭にある限り」剥がす（段落単位）。
     """
     t = _norm_comp(title)
     c = _norm_comp(category)
@@ -139,7 +146,27 @@ def strip_leading_header_lines(lines: List[str], title: str, category: str, date
 
 
 def normalize_spaces(text: str) -> str:
+    # 日本語の見た目を崩しにくい範囲で空白正規化
     return re.sub(r"[ \u3000]+", " ", (text or "")).strip()
+
+
+def split_prefer_newline(text: str, limit: int) -> Tuple[str, str]:
+    """
+    limitで強制分割するのではなく、できるだけ「改行境界」で分割する。
+    - まず limit 以内の末尾から改行を探してそこで切る
+    - なければ limit で切る
+    """
+    if not text:
+        return "", ""
+    if len(text) <= limit:
+        return text, ""
+
+    head = text[:limit]
+    cut = head.rfind("\n")
+    if cut >= max(0, limit - 400):  # 末尾付近に改行があればそこで切る（無駄な短縮を避ける）
+        return text[:cut].rstrip(), text[cut + 1 :].lstrip()
+
+    return head.rstrip(), text[limit:].lstrip()
 
 
 # ---------- discord ----------
@@ -274,8 +301,9 @@ def list_news_items_from_listpage() -> List[Dict]:
 
 def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category: str, date: str) -> str:
     """
-    span細切れ + get_text("\\n") で「1文字改行」になるのを避けるため、段落(p)単位で抽出。
-    段落間は空行を入れず、改行1つで詰める。
+    span細切れ + get_text("\\n") による「1文字改行」を避ける。
+    - 段落(p)単位で抽出
+    - 段落間は空行なし（\\n で詰める）
     """
     body_root = container.select_one("div.txt[data-delighter]") or container.select_one("div.txt") or container
 
@@ -284,13 +312,16 @@ def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category:
 
     if ps:
         for p in ps:
+            # brは改行として残す
             for br in p.find_all("br"):
                 br.replace_with("\n")
-            s = p.get_text("", strip=True)      # 段落内は結合
+            # 段落内は結合
+            s = p.get_text("", strip=True)
             s = normalize_spaces(s)
             if s:
                 paras.append(s)
     else:
+        # pがないページのフォールバック
         blocks = body_root.select("div, section, article")
         for b in blocks:
             for br in b.find_all("br"):
@@ -300,6 +331,7 @@ def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category:
             if s and len(s) >= 10:
                 paras.append(s)
 
+        # 軽い重複排除
         dedup: List[str] = []
         seen = set()
         for x in paras:
@@ -311,8 +343,6 @@ def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category:
         paras = dedup
 
     paras = strip_leading_header_lines(paras, title, category, date)
-
-    # 段落間は空行を入れない（\n で詰める）
     return "\n".join(paras).strip()
 
 
@@ -329,6 +359,7 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
     if container is None:
         container = soup
 
+    # images (JPEG only)
     image_urls: List[str] = []
     for img in container.find_all("img"):
         src = (
@@ -347,6 +378,7 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
             image_urls.append(abs_src)
     image_urls = uniq_keep_order(image_urls)
 
+    # page date fallback
     page_date = ""
     raw_text = container.get_text("\n", strip=True)
     for ln in (raw_text.split("\n")[:200]):
@@ -374,22 +406,19 @@ def build_embed_and_overflow(
 ) -> Tuple[Dict, str]:
     """
     1通目：embed.description は 4000 まで（運用ルール）
-    4000 を超えた分は 2通目（content）へ回す。
-    段落間の空行は入れない（詰める）。
+    4000 を超えた分は 2通目（content 2000）へ回す。
+    段落間の空行は入れない。
     """
     embed_title = truncate(title, EMBED_TITLE_LIMIT)
 
     footer_line = f"{category} / {date}".strip()
     body = (body or "").strip()
 
-    # embed側に footer_line を入れるため予約
-    reserve = len("\n") + len(footer_line) if footer_line else 0
+    reserve = (len("\n") + len(footer_line)) if footer_line else 0
     limit_for_body = max(0, EMBED_DESC_LIMIT_SOFT - reserve)
 
-    body_for_embed = body[:limit_for_body]
-    rest = body[len(body_for_embed):]
+    body_for_embed, rest = split_prefer_newline(body, limit_for_body)
 
-    # 見栄え：本文→改行→カテゴリ/日付（空行は入れない）
     if body_for_embed.strip():
         desc = body_for_embed.rstrip() + ("\n" + footer_line if footer_line else "")
     else:
@@ -466,19 +495,19 @@ def main() -> None:
     state = load_state()
     notified: Set[str] = set(state.get("notified_news_urls", []))
 
-    today = jst_today_yyyymmdd()
+    target = jst_target_yyyymmdd(cutoff_hour=6)  # 6時前は昨日扱い
 
     items = list_news_items_from_listpage()
-    todays = [it for it in items if it.get("date") == today]
+    targets = [it for it in items if it.get("date") == target]
 
-    if not todays:
-        print(f"[NEWS] No items for today: {today}")
+    if not targets:
+        print(f"[NEWS] No items for target date: {target}")
         return
 
     posted = 0
     skipped = 0
 
-    for it in todays:
+    for it in targets:
         if it["url"] in notified:
             skipped += 1
             continue
@@ -491,7 +520,7 @@ def main() -> None:
 
     state["notified_news_urls"] = sorted(notified)
     save_state(state)
-    print(f"[NEWS] Done. today={today} posted={posted} skipped(already)={skipped}")
+    print(f"[NEWS] Done. target={target} posted={posted} skipped(already)={skipped}")
 
 
 if __name__ == "__main__":
