@@ -11,15 +11,18 @@ from typing import List, Dict, Set, Tuple, Optional
 NEWS_LIST_URL = "https://bokuao.com/news/1/"
 STATE_FILE = "state_news.json"
 
-UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.0)"
+UA = "Mozilla/5.0 (compatible; BokuaoNewsDiscordNotifier/3.1)"
 
-# Discord content limit
-DISCORD_CONTENT_LIMIT = 2000  # content は 2000 まで
+# Discord limits
+DISCORD_CONTENT_LIMIT = 2000          # message content
+EMBED_TITLE_LIMIT = 256              # embed title
+EMBED_DESC_LIMIT_HARD = 4096         # Discord hard limit (embed.description)
+EMBED_DESC_LIMIT_SOFT = 4000         # あなたの運用ルール：ここを超えたら2通目へ
 
 MAX_IMAGES_PER_POST = 10
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 
-# JPEGのみ（方針に合わせる）
+# JPEGのみ
 ALLOWED_EXT = (".jpg", ".jpeg")
 
 NEWS_WEBHOOK_URL = os.environ["BOKUAO_NEWS"]
@@ -111,29 +114,24 @@ def strip_leading_header_lines(lines: List[str], title: str, category: str, date
             out.pop(0)
             continue
 
-        # タイトル/カテゴリ/日付（完全一致）は除去
         if head == t or head == c or head == d:
             out.pop(0)
             continue
 
-        # 日付単独行
         if NEWS_DATE_RE.fullmatch(head_raw):
             out.pop(0)
             continue
 
-        # カテゴリ単独行（OTHER 等）
         if head_raw in NEWS_CATEGORIES:
             out.pop(0)
             continue
 
-        # ありがちなノイズ
         if head in ("NEWS", "SHARE", "BACK", "SUPPORT"):
             out.pop(0)
             continue
 
         break
 
-    # 先頭空行除去
     while out and not (out[0] or "").strip():
         out.pop(0)
 
@@ -141,15 +139,11 @@ def strip_leading_header_lines(lines: List[str], title: str, category: str, date
 
 
 def normalize_spaces(text: str) -> str:
-    # 連続空白を詰める（日本語の見た目を崩さない範囲）
     return re.sub(r"[ \u3000]+", " ", (text or "")).strip()
 
 
 # ---------- discord ----------
 def webhook_post_json(payload: Dict) -> None:
-    """
-    Discord側が一時的に不調（5xx）でも落ちにくくする。
-    """
     last_status = None
     last_body = None
 
@@ -214,9 +208,6 @@ def webhook_post_with_files(payload: Dict, files: List[Tuple[str, bytes]]) -> No
 
 # ---------- scraping ----------
 def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
-    """
-    JPEGのみダウンロードして (filename, bytes) を返す（大きすぎるものはスキップ）
-    """
     out: List[Tuple[str, bytes]] = []
     for i, u in enumerate(urls, start=1):
         try:
@@ -239,9 +230,6 @@ def download_images(urls: List[str]) -> List[Tuple[str, bytes]]:
 
 
 def list_news_items_from_listpage() -> List[Dict]:
-    """
-    /news/1/ から {date, category, title, url} を抽出
-    """
     html = fetch(NEWS_LIST_URL)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -273,7 +261,6 @@ def list_news_items_from_listpage() -> List[Dict]:
             }
         )
 
-    # URL重複除去（順序維持）
     seen = set()
     out: List[Dict] = []
     for it in items:
@@ -287,37 +274,25 @@ def list_news_items_from_listpage() -> List[Dict]:
 
 def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category: str, date: str) -> str:
     """
-    改行が不自然になる根本原因（span細切れ + get_text("\\n")）を回避するため、
-    「段落(p)」単位で抽出する。
-
-    - 段落内は span 分割されていても結合（separator=""）
-    - <br> は改行として残すため、先に "\\n" に置換
-    - 先頭の見出しブロック（タイトル/日付/カテゴリ）を段落単位で除去
+    span細切れ + get_text("\\n") で「1文字改行」になるのを避けるため、段落(p)単位で抽出。
     """
-    # 本文が入っていそうなブロックを優先（なければ container 全体）
     body_root = container.select_one("div.txt[data-delighter]") or container.select_one("div.txt") or container
 
     paras: List[str] = []
-
-    # pが取れるならp優先
     ps = body_root.select("p")
+
     if ps:
         for p in ps:
-            # br を改行として残す
             for br in p.find_all("br"):
                 br.replace_with("\n")
-
-            # 段落内は結合（ここが重要）
-            s = p.get_text("", strip=True)
+            s = p.get_text("", strip=True)      # 段落内は結合
             s = normalize_spaces(s)
             if s:
                 paras.append(s)
     else:
-        # pがないページ用のフォールバック（div等から段落っぽく拾う）
-        # ただし get_text("\n") だと崩れやすいので、短いブロックだけ拾う
+        # フォールバック（pが無いページ用）
         blocks = body_root.select("div, section, article")
         for b in blocks:
-            # brは残す
             for br in b.find_all("br"):
                 br.replace_with("\n")
             s = b.get_text("", strip=True)
@@ -325,7 +300,7 @@ def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category:
             if s and len(s) >= 10:
                 paras.append(s)
 
-        # 重複が出ることがあるので軽く重複排除
+        # 軽い重複排除
         dedup: List[str] = []
         seen = set()
         for x in paras:
@@ -336,10 +311,7 @@ def extract_news_body_paragraphs(container: BeautifulSoup, title: str, category:
             dedup.append(x)
         paras = dedup
 
-    # 先頭見出し除去（段落単位）
     paras = strip_leading_header_lines(paras, title, category, date)
-
-    # 段落区切りは空行（Discordで読みやすい）
     return "\n\n".join(paras).strip()
 
 
@@ -356,7 +328,7 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
     if container is None:
         container = soup
 
-    # 画像（JPEGのみ）
+    # images (JPEG only)
     image_urls: List[str] = []
     for img in container.find_all("img"):
         src = (
@@ -367,7 +339,6 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
         )
         if not src:
             continue
-
         if src.strip().lower().startswith("data:image/"):
             continue
 
@@ -376,7 +347,7 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
             image_urls.append(abs_src)
     image_urls = uniq_keep_order(image_urls)
 
-    # ページ内の日付（保険）
+    # page date fallback
     page_date = ""
     raw_text = container.get_text("\n", strip=True)
     for ln in (raw_text.split("\n")[:200]):
@@ -385,13 +356,9 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
             page_date = m.group(0)
             break
 
-    # 本文（段落ベース）
     body = extract_news_body_paragraphs(container, title=title, category=category, date=list_date or page_date)
-
-    # 末尾ノイズを軽くカット（必要なら）
     body = cut_at_first_marker(body, ["SHARE", "BACK", "SUPPORT"])
 
-    # 日付は一覧優先、なければページ内
     date = list_date or page_date or "（不明）"
 
     return {
@@ -402,30 +369,55 @@ def parse_news_detail(detail_url: str, title: str, category: str, list_date: str
     }
 
 
-# ---------- posting (NO EMBED) ----------
-def build_content_text(title: str, url: str, body: str, category: str, date: str) -> str:
+# ---------- posting (EMBED + overflow to 2nd message) ----------
+def build_embed_and_overflow(
+    title: str, url: str, body: str, category: str, date: str
+) -> Tuple[Dict, str]:
     """
-    embedなし：content で送る
-    - 1行目：太字 + リンク
-    - 本文
-    - 最後に「category / date」
+    1通目：embed.description は 4000 まで（あなたのルール）
+    4000 を超えた分は 2通目（content）へ回す。
     """
-    header = f"**[{title}]({url})**"
-    footer = f"{category} / {date}"
+    embed_title = truncate(title, EMBED_TITLE_LIMIT)
 
-    parts = [header]
-    if body:
-        parts.append(body)
-    parts.append(footer)
+    footer_line = f"{category} / {date}".strip()
+    body = (body or "").strip()
 
-    content = "\n\n".join(parts).strip()
-    return truncate(content, DISCORD_CONTENT_LIMIT)
+    # embed側に必ず footer_line を入れるため、先に予約分を確保
+    reserve = len("\n\n") + len(footer_line) if footer_line else 0
+    limit_for_body = max(0, EMBED_DESC_LIMIT_SOFT - reserve)
+
+    body_for_embed = body[:limit_for_body]
+    rest = body[len(body_for_embed):]
+
+    # 見栄え：embed側は本文→空行→カテゴリ/日付
+    if body_for_embed.strip():
+        desc = body_for_embed.rstrip() + ("\n\n" + footer_line if footer_line else "")
+    else:
+        desc = footer_line if footer_line else ""
+
+    # 念のためハード制限ガード
+    desc = truncate(desc, EMBED_DESC_LIMIT_HARD)
+
+    embed = {
+        "title": embed_title,
+        "url": url,
+        "description": desc,
+    }
+
+    # 2通目は「続き」だけ（content 2000 制限内で省略）
+    overflow = (rest or "").lstrip()
+    if overflow:
+        overflow = "（続き）\n" + overflow
+        overflow = truncate(overflow, DISCORD_CONTENT_LIMIT)
+
+    return embed, overflow
 
 
-def post_news_item_text_then_images(item: Dict) -> None:
+def post_news_item_embed_then_overflow_then_images(item: Dict) -> None:
     """
-    1通目：content（embedなし）
-    2通目：画像だけ添付（最大10枚）
+    1通目：Embed（最大4000文字相当まで）
+    2通目：溢れた本文（あれば）
+    3通目：画像（あれば）
     """
     title = item.get("title") or "（タイトル不明）"
     category = item.get("category") or "（不明）"
@@ -434,21 +426,33 @@ def post_news_item_text_then_images(item: Dict) -> None:
 
     detail = parse_news_detail(url, title=title, category=category, list_date=date)
 
-    content = build_content_text(
+    final_date = (detail.get("date") or date or "（不明）").strip()
+    body = (detail.get("body") or "").strip()
+
+    embed, overflow = build_embed_and_overflow(
         title=title,
         url=url,
-        body=(detail.get("body") or "").strip(),
+        body=body,
         category=category,
-        date=(detail.get("date") or date or "（不明）"),
+        date=final_date,
     )
 
     payload1 = {
-        "content": content,
+        "content": "",
+        "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
     webhook_post_json(payload1)
 
     time.sleep(0.9)
+
+    if overflow:
+        payload2 = {
+            "content": overflow,
+            "allowed_mentions": {"parse": []},
+        }
+        webhook_post_json(payload2)
+        time.sleep(0.9)
 
     imgs = (detail.get("images") or [])[:MAX_IMAGES_PER_POST]
     if not imgs:
@@ -458,11 +462,11 @@ def post_news_item_text_then_images(item: Dict) -> None:
     if not files:
         return
 
-    payload2 = {
+    payload3 = {
         "content": "",
         "allowed_mentions": {"parse": []},
     }
-    webhook_post_with_files(payload2, files)
+    webhook_post_with_files(payload3, files)
 
 
 def main() -> None:
@@ -486,7 +490,7 @@ def main() -> None:
             skipped += 1
             continue
 
-        post_news_item_text_then_images(it)
+        post_news_item_embed_then_overflow_then_images(it)
         notified.add(it["url"])
         posted += 1
 
